@@ -467,7 +467,7 @@ impl App {
                     caption(ui, "Window layout from");
                     let labels: Vec<String> = scan.sources.iter().map(|s| s.label.clone()).collect();
                     let mut sel = scan.source;
-                    egui::ComboBox::from_id_salt("xfer-source").width(right.width() - 4.0).selected_text(elide(ui.painter(), &labels[sel], FontId::proportional(13.0), right.width() - 40.0)).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("xfer-source").width(right.width() - 4.0).selected_text(elide(ui.painter(), labels[sel].split(" (").next().unwrap_or(""), FontId::proportional(15.0), right.width() - 60.0)).show_ui(ui, |ui| {
                         for (i, l) in labels.iter().enumerate() {
                             ui.selectable_value(&mut sel, i, l);
                         }
