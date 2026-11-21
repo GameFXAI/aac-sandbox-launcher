@@ -249,7 +249,8 @@ fn go(args: &[String]) -> Result<(), String> {
                 println!("{}", if ticks.is_empty() { "nothing to move" } else { "dry run: nothing written" });
                 return Ok(());
             }
-            let mut lines = transfer::apply_local(&paths, &scan, &ticks)?;
+            let applied = transfer::apply_local(&paths, &scan, &ticks)?;
+            let mut lines = applied.lines;
             let (mut srv, mut acct) = (String::new(), String::new());
             if let Some(p) = scan.payload(&ticks) {
                 let s = server()?;
@@ -258,7 +259,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 srv = cfg.login_ip.trim().to_string();
                 acct = user.trim().to_string();
             }
-            transfer::record(&paths, &ticks, None, &srv, &acct)?;
+            transfer::record(&paths, &ticks, applied.backup, &srv, &acct)?;
             for l in lines {
                 println!("moved: {l}");
             }

@@ -263,7 +263,8 @@ impl App {
         let (paths, tx, link) = (self.paths.clone(), self.tx.clone(), self.cfg.login_ip.trim().to_string());
         std::thread::spawn(move || {
             let r = (|| {
-                let mut lines = transfer::apply_local(&paths, &scan, &ticks)?;
+                let applied = transfer::apply_local(&paths, &scan, &ticks)?;
+                let mut lines = applied.lines;
                 let mut server = String::new();
                 let mut user = String::new();
                 if let (Some(p), Some((s, u, pw))) = (server_part, account) {
@@ -276,12 +277,12 @@ impl App {
                         }
                         Err(e) => {
                             // what moved on this PC stays undoable
-                            let _ = transfer::record(&paths, &ticks, None, "", "");
+                            let _ = transfer::record(&paths, &ticks, applied.backup.clone(), "", "");
                             return Err(if lines.is_empty() { format!("the server did not take it: {e}") } else { format!("{} moved; the server did not take the rest: {e}", lines.join(", ")) });
                         }
                     }
                 }
-                transfer::record(&paths, &ticks, None, &server, &user)?;
+                transfer::record(&paths, &ticks, applied.backup, &server, &user)?;
                 Ok(lines)
             })();
             let _ = tx.send(Msg::Xfer(XMsg::Done(r)));

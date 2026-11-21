@@ -383,10 +383,22 @@ fn now() -> u64 {
 
 /// Writes the ticked local parts into the sandbox profile, after a backup of what is there. Returns one line per
 /// part done. The sandbox client must be closed (it holds its store open).
-pub fn apply_local(paths: &Paths, scan: &Scan, ticked: &[&str]) -> Result<Vec<String>, String> {
+/// What `apply_local` did: the lines for the player, and the backup it made (none when nothing on this PC changed).
+pub struct Applied {
+    pub lines: Vec<String>,
+    pub backup: Option<PathBuf>,
+}
+
+pub fn apply_local(paths: &Paths, scan: &Scan, ticked: &[&str]) -> Result<Applied, String> {
     let on = |id: &str| ticked.contains(&id);
     let mut done = Vec::new();
-    let backup = transfer_dir(paths).join(format!("backup-{}", now()));
+    // a folder of its own, even for two transfers in one second
+    let mut backup = transfer_dir(paths).join(format!("backup-{}", now()));
+    let mut n = 1;
+    while backup.exists() {
+        backup = transfer_dir(paths).join(format!("backup-{}-{n}", now()));
+        n += 1;
+    }
     fs::create_dir_all(&backup).map_err(|e| format!("cannot make the backup folder: {e}"))?;
 
     let ours_cfg = paths.docs().join("system.cfg");
@@ -437,21 +449,35 @@ pub fn apply_local(paths: &Paths, scan: &Scan, ticked: &[&str]) -> Result<Vec<St
         }
         fs::rename(&fresh, &dir).map_err(|e| format!("cannot put the new interface store in place: {e}"))?;
     }
-    Ok(done)
+    if done.is_empty() {
+        // only account parts this time: no empty backup, so Undo still finds the last one that changed this PC
+        let _ = fs::remove_dir(&backup);
+        return Ok(Applied { lines: done, backup: None });
+    }
+    Ok(Applied { lines: done, backup: Some(backup) })
 }
 
 /// Records what was moved, for Undo.
+/// A transfer that changed nothing on this PC (`backup_of` None) keeps the earlier one's backup, and one without an
+/// account part keeps the earlier one's server and account: Undo then still puts back everything not yet undone.
 pub fn record(paths: &Paths, items: &[&str], backup_of: Option<PathBuf>, server: &str, account: &str) -> Result<(), String> {
-    let backup = backup_of.or_else(|| newest_backup(paths)).unwrap_or_default();
-    let l = Last { when: now(), backup, items: items.iter().map(|s| s.to_string()).collect(), server: server.into(), account: account.into() };
+    let mut l = Last { when: now(), backup: backup_of.clone().unwrap_or_default(), items: items.iter().map(|s| s.to_string()).collect(), server: server.into(), account: account.into() };
+    if let Some(prev) = last(paths) {
+        if backup_of.is_none() && prev.backup.is_dir() {
+            l.backup = prev.backup;
+        }
+        if server.is_empty() {
+            l.server = prev.server;
+            l.account = prev.account;
+        }
+        for i in prev.items {
+            if !l.items.contains(&i) {
+                l.items.push(i);
+            }
+        }
+    }
     fs::create_dir_all(transfer_dir(paths)).map_err(|e| e.to_string())?;
     fs::write(transfer_dir(paths).join("last.json"), serde_json::to_string_pretty(&l).unwrap()).map_err(|e| e.to_string())
-}
-
-pub fn newest_backup(paths: &Paths) -> Option<PathBuf> {
-    let mut b: Vec<PathBuf> = fs::read_dir(transfer_dir(paths)).ok()?.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("backup-"))).collect();
-    b.sort();
-    b.pop()
 }
 
 /// Puts back what the last transfer replaced in this PC's profile. The server part is undone with
@@ -586,8 +612,17 @@ mod tests {
         assert_eq!(items[3].summary, "4 key bindings");
 
         let done = apply_local(&paths, &s, &IDS).unwrap();
-        assert_eq!(done.len(), 3, "{done:?}");
-        record(&paths, &IDS, None, "", "").unwrap();
+        assert_eq!(done.lines.len(), 3, "{:?}", done.lines);
+        record(&paths, &IDS, done.backup.clone(), "", "").unwrap();
+        // a second transfer of account parts only (found on the hosted box 2026-11-21): it makes no backup and keeps
+        // the first one's, so Undo still puts this PC back
+        let again = apply_local(&paths, &s, &["keybinds", "bars"]).unwrap();
+        assert!(again.lines.is_empty() && again.backup.is_none());
+        record(&paths, &["keybinds", "bars"], again.backup, "https://arena.example", "friend").unwrap();
+        let l = last(&paths).unwrap();
+        assert_eq!(Some(l.backup.clone()), done.backup);
+        assert_eq!((l.server.as_str(), l.account.as_str()), ("https://arena.example", "friend"));
+        assert_eq!(fs::read_dir(transfer_dir(&paths)).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("backup-")).count(), 1);
         let cfg = fs::read_to_string(paths.docs().join("system.cfg")).unwrap();
         assert!(cfg.contains("r_width = 2560") && cfg.contains("locale = en_us") && !cfg.contains("9.9.9.9"));
         let after = ldb::values(&ldb::read_dir(&sandbox_store(&paths)).unwrap());
