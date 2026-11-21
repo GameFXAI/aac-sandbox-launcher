@@ -94,9 +94,24 @@ cargo build --release
 cargo test
 ```
 
+## Installer
+
+`installer\aac-sandbox-launcher.iss` is an Inno Setup 6 script: per user, no administrator rights, the launcher
+only (no game files). Uninstall removes the launcher; it asks before removing the data folder with the game copy.
+
+```
+cargo build --release
+iscc /DAppVersion=0.1.0 installer\aac-sandbox-launcher.iss
+```
+
+The script has not been compiled yet (Inno Setup is not on the development PC).
+
+## Licence
+
+GPL-3.0, see `LICENSE`.
+
 ## Not built yet
 
-- Addon packs and settings copy.
 - Crash reports sent to our own receiver.
-- The Inno Setup installer; a host for the update manifest.
+- A compiled and tested installer; a host for the update manifest.
 - Importing an action-bar layout from an existing profile.
