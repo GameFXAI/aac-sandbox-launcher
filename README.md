@@ -26,6 +26,7 @@ aac-sandbox-launcher setup [--aac C:\Games\AAClassic] [--mode standard|full]
 aac-sandbox-launcher play --user NAME (--password P | --token HEX64) [--server ADDRESS-OR-LINK] [--login-port N] [--wait]
 aac-sandbox-launcher info [--server LINK]
 aac-sandbox-launcher signup --user NAME --password P [--invite CODE] [--server LINK]
+aac-sandbox-launcher addons [--server LINK]
 aac-sandbox-launcher vault
 aac-sandbox-launcher pack export FILE [--build ID]
 aac-sandbox-launcher pack import FILE [--server LINK]
@@ -35,6 +36,12 @@ aac-sandbox-launcher remove [--profile]
 ```
 
 When AA Classic updates, `status` says the copy is outdated. Run `setup` again.
+
+## The server's addons
+
+A server with an account API can name an addon pack (the menus and HUD of its game modes). Before play the launcher downloads it from that server, checks every file against the pack's list and the pack's id against the one the server named, and installs it into the sandbox client's own `Documents\AAClassic\Addon` (never the real one). It adds the addons to `addons.txt` and `addon_settings`; addons the player put there themself and their on/off settings are left alone. The next pack replaces exactly the addons the last one installed.
+
+Checked 2026-11-21 against a local login server: the arena pack (`pts_menu`, 174 files) downloads and installs; the files equal the server's package. Not yet seen: the client loading it from there (the game was not started).
 
 ## Client builds: vault and build packs
 

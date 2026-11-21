@@ -9,6 +9,7 @@
 //! --server is a bare address (a development server: the client gets the password hash) or a link to a server's
 //! account API (https://..., or http:// on this PC): then --password is checked there and the client gets a ticket.
 //!   aac-sandbox-launcher remove [--profile]
+//!   aac-sandbox-launcher addons [--server <link>]     install the addons the server names (play does this too)
 //!   aac-sandbox-launcher vault                        the client builds kept, by build id
 //!   aac-sandbox-launcher pack export <file> [--build ID]   one build as a file for a friend
 //!   aac-sandbox-launcher pack import <file> [--server <link>]   a friend's build into the vault
@@ -18,7 +19,7 @@
 
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{install, pak, vault};
+use crate::{addons, install, pak, vault};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -101,6 +102,10 @@ fn go(args: &[String]) -> Result<(), String> {
             let (user, token) = match (opt(args, "--token"), opt(args, "--password"), &server) {
                 (Some(t), _, _) => (user, t.to_lowercase()),
                 (None, Some(p), Server::Api { .. }) => {
+                    // the server's addons first: a ticket is only good for two minutes
+                    if let Some(line) = addons::ensure(&paths, &server)? {
+                        println!("{line}");
+                    }
                     let t = net::login(&server, &user, &p)?;
                     println!("logged in as {}", t.username);
                     (t.username, t.ticket)
@@ -137,6 +142,13 @@ fn go(args: &[String]) -> Result<(), String> {
             cfg.username = name.clone();
             let _ = cfg.save(&paths);
             println!("account {name} created");
+        }
+        "addons" => {
+            let server = server()?;
+            match addons::ensure(&paths, &server)? {
+                Some(line) => println!("{line}"),
+                None => println!("nothing to do: {}", if matches!(server, Server::Api { .. }) { "the server's addons are in place, or it has none" } else { "a bare address has no addon pack" }),
+            }
         }
         "vault" => {
             let current = vault::scan(&paths.bin()).ok().map(|b| b.id);
@@ -261,7 +273,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 println!("sandbox user folder removed");
             }
         }
-        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
+        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | addons | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
     }
     Ok(())
 }

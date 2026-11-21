@@ -4,7 +4,7 @@
 use crate::cli::default_aac_dir;
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{install, vault};
+use crate::{addons, install, vault};
 use eframe::egui::{
     self, Align, Align2, Color32, FontData, FontFamily, FontId, Layout, Margin, Painter, Pos2, Rect, RichText, Sense,
     Shape, Stroke, TextEdit, UiBuilder, Vec2, ViewportCommand, pos2, vec2,
@@ -600,8 +600,19 @@ impl App {
             // the password is checked by the server's account API; the client only ever gets a one-time ticket
             self.asking = true;
             self.say("signing in...");
-            let (tx, password) = (self.tx.clone(), self.password.clone());
+            let (tx, password, paths) = (self.tx.clone(), self.password.clone(), self.paths.clone());
             std::thread::spawn(move || {
+                // the server's addons first: a ticket is only good for two minutes
+                match addons::ensure(&paths, &server) {
+                    Ok(Some(line)) => {
+                        let _ = tx.send(Msg::Line(line));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = tx.send(Msg::Ticket(Err(format!("server addons: {e}"))));
+                        return;
+                    }
+                }
                 let _ = tx.send(Msg::Ticket(net::login(&server, &username, &password).map(|t| (t.username, t.ticket))));
             });
             return;

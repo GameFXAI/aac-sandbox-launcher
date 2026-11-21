@@ -143,6 +143,21 @@ pub fn info(server: &Server) -> Result<Info, String> {
     r.into_json().map_err(|e| format!("the server's answer was not understood: {e}"))
 }
 
+/// Downloads the server's addon pack with this id (addons.rs checks it before anything is written).
+pub fn pack(server: &Server, id: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let r = ureq::AgentBuilder::new().timeout(Duration::from_secs(120)).redirects(0).build().get(&format!("{}/api/packs/{id}", api_url(server)?)).call().map_err(|e| match e {
+        ureq::Error::Status(404, _) => "the server does not have the addon pack it names".to_string(),
+        e => failed(e),
+    })?;
+    let mut out = Vec::new();
+    r.into_reader().take(crate::addons::MAX_PACK + 1).read_to_end(&mut out).map_err(|e| format!("the addon pack download broke off: {e}"))?;
+    if out.len() as u64 > crate::addons::MAX_PACK {
+        return Err("the addon pack is larger than an addon pack can be".into());
+    }
+    Ok(out)
+}
+
 /// Makes the account; the answer is the name as the server stored it.
 pub fn signup(server: &Server, username: &str, password: &str, invite: &str) -> Result<String, String> {
     #[derive(Deserialize)]

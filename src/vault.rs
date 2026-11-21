@@ -133,7 +133,7 @@ pub fn vault_dir(paths: &Paths) -> PathBuf {
     paths.root.join("vault")
 }
 
-fn valid_id(id: &str) -> bool {
+pub fn valid_id(id: &str) -> bool {
     id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
@@ -237,7 +237,7 @@ pub fn restore(paths: &Paths, id: &str, dst: &Path) -> Result<Build, String> {
 // ---------------------------------------------------------------------------------------------------------------
 
 /// A path from a pack, made safe: relative, no drive, no `..`, no empty or dotted-only parts, no stream names.
-fn safe_rel(p: &str) -> Result<PathBuf, String> {
+pub fn safe_rel(p: &str) -> Result<PathBuf, String> {
     let bad = || format!("the pack names a file outside the build: {p:?}");
     if p.is_empty() || p.starts_with('/') || p.contains('\\') || p.contains(':') || p.contains('\0') {
         return Err(bad());

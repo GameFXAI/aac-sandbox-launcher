@@ -1,6 +1,7 @@
 // A window when started without arguments; command-line mode (see cli.rs) otherwise.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+mod addons;
 mod cli;
 mod core;
 mod gui;
