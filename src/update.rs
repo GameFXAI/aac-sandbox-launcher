@@ -24,8 +24,8 @@ use std::time::Duration;
 
 /// The public key updates must be signed with (hex). The private key is the owner's and is in no repository.
 pub const UPDATE_KEY: &str = "fef8a3544a2b38be22877cf633804ed61c614aacd6d9ea32bd5dd0ca317b70cc";
-/// Where the manifest is; empty = no self-update unless launcher.json names one.
-pub const MANIFEST_URL: &str = "";
+/// Where the manifest is (static files on the arena box, served by Caddy without redirects).
+pub const MANIFEST_URL: &str = "https://77-42-46-123.sslip.io/launcher/manifest.json";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_MANIFEST: u64 = 1 << 20;
