@@ -82,6 +82,8 @@ impl Server {
 pub struct Info {
     pub name: String,
     pub builds: Vec<String>,
+    /// the client builds (vault build ids) this server accepts; empty = not stated
+    pub build_ids: Vec<String>,
     pub addon_pack: String,
     /// "invite" or "open"
     pub signup: String,

@@ -240,9 +240,18 @@ pub fn status(paths: &Paths, aac: &AacInstall, mode: Mode) -> State {
     if !paths.exe().is_file() {
         return State::NotSetUp;
     }
-    match (fingerprint(&aac.bin()), fingerprint(&paths.bin())) {
-        (Ok(a), Ok(b)) if a == b => {}
-        _ => return State::BinOutdated,
+    // AA Classic's launcher keeps a SHA-256 of every binNext file; our copy carries the list it was made from
+    match (crate::vault::recorded_hashes(&aac.bin()), crate::vault::recorded_hashes(&paths.bin())) {
+        (Some(a), Some(b)) => {
+            if a != b {
+                return State::BinOutdated;
+            }
+        }
+        // no such list (an old or hand-made install): names, sizes and modified times
+        _ => match (fingerprint(&aac.bin()), fingerprint(&paths.bin())) {
+            (Ok(a), Ok(b)) if a == b => {}
+            _ => return State::BinOutdated,
+        },
     }
     let pak_ok = match mode {
         Mode::Standard => same_file(&paths.pak(), &aac.pak()).unwrap_or(false),
@@ -274,6 +283,9 @@ pub fn setup(paths: &Paths, aac: &AacInstall, mode: Mode, log: &dyn Fn(String)) 
     let mut n = 0;
     copy_tree(&aac.bin(), &bin, &mut n).map_err(|e| format!("copy of binNext failed: {e}"))?;
     log(format!("copied {n} files"));
+    // every build the launcher has copied stays in the vault, so it is still there after AA Classic updates
+    let build = crate::vault::add(paths, &bin)?;
+    log(format!("client build {}", &build.id[..12]));
 
     // game_pak
     let pak = paths.pak();
@@ -596,6 +608,23 @@ mod tests {
         assert!(!same_file(&paths.pak(), &aac.pak()).unwrap());
         // a hardlinked copy is not a Full copy
         assert_eq!(status(&paths, &aac, Mode::Standard), State::PakOutdated);
+    }
+
+    #[test]
+    fn aac_update_is_noticed_by_its_hash_list() {
+        let d = tmp("hashlist");
+        let aac_dir = d.join("aac");
+        fake_aac(&aac_dir);
+        let state = |sha: &str| format!(r#"{{"build":"b","complete":true,"files":{{"archeage.exe":{{"size":1,"sha256":"{sha}"}}}}}}"#);
+        fs::write(aac_dir.join("binNext").join(".state.json"), state("aa")).unwrap();
+        let paths = Paths::at(d.join("ours"));
+        let aac = AacInstall::open(&aac_dir, &paths).unwrap();
+        setup(&paths, &aac, Mode::Standard, &|_| {}).unwrap();
+        assert_eq!(status(&paths, &aac, Mode::Standard), State::Ready);
+        assert_eq!(crate::vault::builds(&paths).len(), 1);
+        // the same files with a newer list: AA Classic says a file changed
+        fs::write(aac_dir.join("binNext").join(".state.json"), state("bb")).unwrap();
+        assert_eq!(status(&paths, &aac, Mode::Standard), State::BinOutdated);
     }
 
     #[test]
