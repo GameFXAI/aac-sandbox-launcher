@@ -35,7 +35,7 @@ pub struct Paths {
 impl Paths {
     /// `%LOCALAPPDATA%\AAEmuSandbox`, or `AAEMU_SANDBOX_ROOT` when set (tests).
     pub fn new() -> Paths {
-        if let Ok(r) = std::env::var("AAEMU_SANDBOX_ROOT") {
+        if let Some(r) = std::env::var("AAEMU_SANDBOX_ROOT").ok().filter(|r| !r.trim().is_empty()) {
             return Paths { root: PathBuf::from(r) };
         }
         let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
@@ -470,6 +470,7 @@ pub fn play(paths: &Paths, aac: Option<&AacInstall>, mode: Mode, l: &Launch) -> 
         return Err("internal: the token is not 64 hex characters".into());
     }
     fs::create_dir_all(paths.profile().join("Documents")).map_err(|e| e.to_string())?;
+    crate::settings::set_language(paths, &l.lang)?;
     no_crash_dialogs();
     let (set, remove) = client_env(paths);
     let mut cmd = Command::new(paths.exe());

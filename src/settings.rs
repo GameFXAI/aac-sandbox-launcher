@@ -62,6 +62,41 @@ pub fn merge(ours: &str, theirs: &str) -> (String, usize) {
     (out.join("\r\n") + "\r\n", take.len())
 }
 
+/// `ours` with `locale = <lang>` as its language line (in place when there is one, else at the end).
+fn with_language(ours: &str, lang: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut done = false;
+    for line in ours.lines() {
+        if parse(line).is_some_and(|(name, _)| name == "locale") {
+            if !done {
+                out.push(format!("locale = {lang}"));
+                done = true;
+            }
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    if !done {
+        out.push(format!("locale = {lang}"));
+    }
+    out.join("\r\n") + "\r\n"
+}
+
+/// Makes our client's own settings file name the language. Without that line the client shows its interface in
+/// Korean, whatever `--lang` says on the command line. Written only when it is not there yet.
+pub fn set_language(paths: &Paths, lang: &str) -> Result<(), String> {
+    if lang.is_empty() || lang.len() > 16 || !lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err("the language is a short name such as en_us".into());
+    }
+    let file = paths.docs().join("system.cfg");
+    let current = fs::read(&file).map(|b| String::from_utf8_lossy(&b).to_string()).unwrap_or_default();
+    if current.lines().filter_map(parse).any(|(name, value)| name == "locale" && value.trim_matches('"') == lang) {
+        return Ok(());
+    }
+    fs::create_dir_all(paths.docs()).map_err(|e| e.to_string())?;
+    fs::write(&file, with_language(&current, lang)).map_err(|e| format!("cannot write the settings: {e}"))
+}
+
 /// The player's real settings file, if there is one.
 pub fn real_file() -> Option<PathBuf> {
     let mut places = Vec::new();
@@ -123,6 +158,26 @@ mod tests {
         let (text, n) = merge("", theirs);
         assert_eq!(n, 2, "{text}");
         assert_eq!(text, "option_ok = 2\r\nr_height = 1080\r\n");
+    }
+
+    #[test]
+    fn the_language_line_is_written_once_and_other_lines_stay() {
+        let d = std::env::temp_dir().join(format!("aaemu-settings-lang-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let paths = Paths::at(d.join("ours"));
+        let file = paths.docs().join("system.cfg");
+        set_language(&paths, "en_us").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "locale = en_us\r\n");
+        fs::write(&file, "r_width = 800\r\nlocale = \"ko\"\r\nlocale = de\r\nmy_own = 1\r\n").unwrap();
+        set_language(&paths, "en_us").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "r_width = 800\r\nlocale = en_us\r\nmy_own = 1\r\n");
+        let before = fs::metadata(&file).unwrap().modified().unwrap();
+        set_language(&paths, "en_us").unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), before);
+        // copying the player's display settings keeps it
+        let (text, _) = merge(&fs::read_to_string(&file).unwrap(), "r_width = 1920\nlocale = fr\n");
+        assert_eq!(text, "r_width = 1920\r\nlocale = en_us\r\nmy_own = 1\r\n");
+        assert!(set_language(&paths, "en us; x").is_err());
     }
 
     #[test]
