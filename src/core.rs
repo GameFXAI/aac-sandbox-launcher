@@ -104,13 +104,16 @@ impl Config {
     }
 }
 
+/// The hosted arena a new launcher points at (account API over HTTPS; the game ports are on the same box).
+pub const DEFAULT_SERVER: &str = "https://77-42-46-123.sslip.io";
+
 impl Default for Config {
     fn default() -> Self {
         Config {
             aac_dir: None,
             mode: Mode::Standard,
-            login_ip: "127.0.0.1".into(),
-            game_ip: "127.0.0.1".into(),
+            login_ip: DEFAULT_SERVER.into(),
+            game_ip: DEFAULT_SERVER.into(),
             username: String::new(),
             lang: "en_us".into(),
             login_port: 0,
@@ -589,6 +592,13 @@ fn no_crash_dialogs() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_new_launcher_points_at_the_hosted_arena() {
+        let cfg = super::Config::default();
+        let s = crate::net::Server::parse(&cfg.login_ip).unwrap();
+        assert!(matches!(s, crate::net::Server::Api { ref host, .. } if host == "77-42-46-123.sslip.io"));
+    }
+
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
