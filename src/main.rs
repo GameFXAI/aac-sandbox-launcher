@@ -6,9 +6,12 @@ mod cli;
 mod core;
 mod gui;
 mod install;
+mod ldb;
 mod net;
 mod pak;
+mod recording;
 mod settings;
+mod transfer;
 mod update;
 mod vault;
 

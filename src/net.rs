@@ -113,6 +113,8 @@ pub fn explain(code: &str) -> String {
         "BadCredentials" => "wrong account name or password".into(),
         "Banned" => "this account is banned".into(),
         "TooManyAttempts" => "too many tries: wait ten minutes".into(),
+        "GameServerOffline" => "the game server is not running right now: try again in a minute".into(),
+        "BadTransfer" => "the server could not use what was sent".into(),
         "" => "the server refused the request".into(),
         other => format!("the server refused the request ({other})"),
     }
@@ -177,6 +179,96 @@ pub fn login(server: &Server, username: &str, password: &str) -> Result<Ticket, 
         return Err("the server's ticket is not in the expected form".into());
     }
     Ok(t)
+}
+
+/// What the server took from a transfer: the parts it will put on the character at the next world entry.
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct Accepted {
+    pub accepted: Vec<String>,
+}
+
+/// Sends a transfer from AA Classic (see transfer.rs for what is in it) with the account's own name and password.
+/// The server keeps it for the account and applies it when one of its characters next enters the world.
+pub fn transfer(server: &Server, username: &str, password: &str, payload: &serde_json::Value) -> Result<Accepted, String> {
+    let mut body = payload.clone();
+    body["username"] = username.into();
+    body["password"] = password.into();
+    let r = agent().post(&format!("{}/api/transfer", api_url(server)?)).send_json(body).map_err(|e| match e {
+        ureq::Error::Status(404, _) => "this server does not take transfers yet".to_string(),
+        e => failed(e),
+    })?;
+    r.into_json().map_err(|e| format!("the server's answer was not understood: {e}"))
+}
+
+/// A DaruGear build as the launcher shows it before sending: the server fetches and maps it itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Build {
+    pub code: String,
+    pub title: String,
+    pub class: String,
+    /// worn pieces: (slot name, item name, grade name)
+    pub pieces: Vec<(String, String, String)>,
+}
+
+/// The fixed host DaruGear's page reads builds from; only a code is ever put in the address.
+pub const DARU_API: &str = "https://154smechk6.execute-api.ap-southeast-2.amazonaws.com/default/gear/";
+
+/// The share code of a DaruGear link (https://darugear.com/?s=code) or a bare code, as the server reads it.
+pub fn daru_code(text: &str) -> Option<String> {
+    let t = text.trim().trim_matches(|c| c == '"' || c == '<' || c == '>');
+    let ok = |c: &str| (3..=32).contains(&c.len()) && c.chars().all(|x| x.is_ascii_alphanumeric() || x == '_' || x == '-');
+    if let Some(i) = t.find("?s=").or_else(|| t.find("&s=")) {
+        let rest = &t[i + 3..];
+        let code = rest.split(['&', '#']).next().unwrap_or("");
+        let host_ok = t.starts_with("https://darugear.com/") || t.starts_with("http://darugear.com/") || t.starts_with("https://www.darugear.com/") || t.starts_with("darugear.com/");
+        return (host_ok && ok(code)).then(|| code.to_string());
+    }
+    ok(t).then(|| t.to_string())
+}
+
+/// Reads DaruGear's JSON for a build.
+pub fn parse_build(code: &str, json: &serde_json::Value) -> Result<Build, String> {
+    let slots = json.get("slots").and_then(|s| s.as_array()).ok_or("DaruGear has no build with that code")?;
+    let s = |v: Option<&serde_json::Value>| v.and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let mut b = Build { code: code.into(), title: s(json.get("title")), class: s(json.pointer("/player/playerclass/name")), pieces: vec![] };
+    // DaruGear writes numbers as floats (8000924.0) and a grade as its id
+    let num = |v: Option<&serde_json::Value>| v.and_then(|x| x.as_f64()).unwrap_or(0.0);
+    const GRADES: [&str; 13] = ["Basic", "Crude", "Grand", "Rare", "Arcane", "Heroic", "Unique", "Celestial", "Divine", "Epic", "Legendary", "Mythic", "Eternal"];
+    for slot in slots {
+        let eq = slot.pointer("/item/equipment");
+        if num(eq.and_then(|e| e.get("id"))) < 1.0 {
+            continue;
+        }
+        let mut grade = s(slot.pointer("/item/grade/name"));
+        if grade.is_empty() {
+            let g = num(slot.pointer("/item/grade/id"));
+            if g >= 0.0 && (g as usize) < GRADES.len() && slot.pointer("/item/grade/id").is_some() {
+                grade = GRADES[g as usize].to_string();
+            }
+        }
+        b.pieces.push((s(slot.get("name")), s(eq.and_then(|e| e.get("name"))), grade));
+    }
+    if b.title.is_empty() {
+        b.title = code.into();
+    }
+    Ok(b)
+}
+
+/// Asks DaruGear for the build behind a code (the same request the darugear.com page makes).
+pub fn daru(code: &str) -> Result<Build, String> {
+    use std::io::Read;
+    if daru_code(code).as_deref() != Some(code) {
+        return Err("that is not a DaruGear code".into());
+    }
+    let r = ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).redirects(0).build().get(&format!("{DARU_API}{code}")).call().map_err(|e| match e {
+        ureq::Error::Status(c, _) => format!("DaruGear answered {c}"),
+        ureq::Error::Transport(t) => format!("cannot reach DaruGear: {t}"),
+    })?;
+    let mut out = Vec::new();
+    r.into_reader().take(1 << 20).read_to_end(&mut out).map_err(|e| format!("DaruGear's answer broke off: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(&out).map_err(|_| "DaruGear's answer was not understood".to_string())?;
+    parse_build(code, &v)
 }
 
 #[cfg(test)]
@@ -300,4 +392,42 @@ mod tests {
         assert_eq!((i.name.as_str(), i.builds.len(), i.signup.as_str(), i.tickets_only), ("Arena", 1, "invite", true));
         h.join().unwrap();
     }
+    #[test]
+    fn daru_codes_from_links_and_bare_codes() {
+        assert_eq!(daru_code("https://darugear.com/?s=oqHS4M").as_deref(), Some("oqHS4M"));
+        assert_eq!(daru_code("  oqHS4M ").as_deref(), Some("oqHS4M"));
+        assert_eq!(daru_code("https://darugear.com/?x=1&s=ab_c-9#top").as_deref(), Some("ab_c-9"));
+        assert_eq!(daru_code("https://evil.example/?s=abc"), None);
+        assert_eq!(daru_code("https://darugear.com/?s=../x"), None);
+        assert_eq!(daru_code(""), None);
+        assert_eq!(daru_code("two words"), None);
+    }
+
+    #[test]
+    fn a_daru_build_is_read() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"title":"Starter Healer","player":{"playerclass":{"name":"Cleric"}},"slots":[
+            {"name":"Head","item":{"equipment":{"id":1,"name":"Hat"},"grade":{"name":"Mythic"}}},
+            {"name":"Chest","item":{"equipment":{"id":0}}},
+            {"name":"Main Hand","item":{"equipment":{"id":2,"name":"Staff"}}},
+            {"name":"Costume","item":{"equipment":{"id":8000924.0,"name":"Melee Basic Costume"},"grade":{"id":11.0}}}]}"#).unwrap();
+        let b = parse_build("xh1GuZ", &v).unwrap();
+        assert_eq!((b.title.as_str(), b.class.as_str(), b.pieces.len()), ("Starter Healer", "Cleric", 3));
+        assert_eq!(b.pieces[2], ("Costume".into(), "Melee Basic Costume".into(), "Mythic".into()));
+        assert_eq!(b.pieces[0], ("Head".into(), "Hat".into(), "Mythic".into()));
+        assert!(parse_build("x", &serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn a_transfer_carries_the_account_and_the_parts() {
+        let (s, h) = serve_once("200 OK", r#"{"accepted":["gear","keybinds"]}"#);
+        let a = transfer(&s, "friend", "long enough", &serde_json::json!({"gear":"oqHS4M","uiData":{"2":"x"}})).unwrap();
+        assert_eq!(a.accepted, vec!["gear", "keybinds"]);
+        let sent = h.join().unwrap();
+        assert!(sent.starts_with("POST /api/transfer "));
+        assert!(sent.contains(r#""gear":"oqHS4M""#) && sent.contains(r#""username":"friend""#));
+        let (s, h) = serve_once("404 Not Found", "");
+        assert_eq!(transfer(&s, "a", "b", &serde_json::json!({})).err(), Some("this server does not take transfers yet".into()));
+        h.join().unwrap();
+    }
+
 }

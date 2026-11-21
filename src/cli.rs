@@ -12,6 +12,10 @@
 //!   aac-sandbox-launcher update [--check]              a newer launcher from the signed manifest
 //!   aac-sandbox-launcher manifest keygen|make|sign     for the owner: sign a release (see update.rs)
 //!   aac-sandbox-launcher settings copy [--from FILE]   your display and sound settings from AA Classic (read only)
+//!   aac-sandbox-launcher transfer [--recording FILE] [--gear LINK] [--only a,b] [--dry-run] [--aac-docs DIR]
+//!                                   [--user U --password P]   your AA Classic setup (see transfer.rs); shows the
+//!                                   preview, then moves the ticked parts; --dry-run only shows it
+//!   aac-sandbox-launcher transfer undo [--user U --password P]   puts back what the last transfer replaced
 //!   aac-sandbox-launcher addons [--server <link>]     install the addons the server names (play does this too)
 //!   aac-sandbox-launcher vault                        the client builds kept, by build id
 //!   aac-sandbox-launcher pack export <file> [--build ID]   one build as a file for a friend
@@ -22,7 +26,7 @@
 
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{addons, install, pak, settings, update, vault};
+use crate::{addons, install, pak, settings, transfer, update, vault};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -199,6 +203,66 @@ fn go(args: &[String]) -> Result<(), String> {
             let n = settings::copy_from(&paths, &from)?;
             println!("{n} display and sound settings copied from {} (that file was only read)", from.display());
         }
+        "transfer" => {
+            let user = opt(args, "--user").unwrap_or_else(|| cfg.username.clone());
+            let password = opt(args, "--password").unwrap_or_default();
+            if args.get(1).map(String::as_str) == Some("undo") {
+                let last = transfer::last(&paths).ok_or("nothing to undo")?;
+                if !last.server.is_empty() {
+                    if password.is_empty() {
+                        return Err("the last transfer also went to your account: pass --password".into());
+                    }
+                    net::transfer(&Server::parse(&last.server)?, &last.account, &password, &serde_json::json!({ "undo": true }))?;
+                    println!("server: your keybinds, options and bars from before go back at the next login");
+                }
+                for l in transfer::undo_local(&paths)? {
+                    println!("put back: {l}");
+                }
+                return Ok(());
+            }
+            let docs = opt(args, "--aac-docs").map(PathBuf::from).or_else(transfer::real_docs);
+            let rec = opt(args, "--recording").map(PathBuf::from).or_else(|| crate::recording::find(&paths).into_iter().next());
+            let mut scan = transfer::scan(&paths, docs.as_deref(), rec.as_deref());
+            if let Some(link) = opt(args, "--gear") {
+                let code = net::daru_code(&link).ok_or("--gear takes a DaruGear link or code")?;
+                match net::daru(&code) {
+                    Ok(b) => scan.build = Some(b),
+                    Err(e) => scan.build_error = Some(e),
+                }
+            }
+            let only: Option<Vec<String>> = opt(args, "--only").map(|o| o.split(',').map(|x| x.trim().to_string()).collect());
+            let server_ok = !user.trim().is_empty() && !password.is_empty() && matches!(server(), Ok(Server::Api { .. }));
+            let items = scan.items();
+            let mut ticks: Vec<&'static str> = vec![];
+            for it in &items {
+                let wanted = only.as_ref().is_none_or(|o| o.iter().any(|x| x == it.id));
+                let on = it.ready && wanted && (!it.server || server_ok);
+                if on {
+                    ticks.push(it.id);
+                }
+                println!("[{}] {:<20} {}{}", if on { "x" } else { " " }, it.title, it.summary, if it.server && !server_ok && it.ready { "  (needs --user/--password and a server link)" } else { "" });
+                for l in &it.lines {
+                    println!("      {l}");
+                }
+            }
+            if flag(args, "--dry-run") || ticks.is_empty() {
+                println!("{}", if ticks.is_empty() { "nothing to move" } else { "dry run: nothing written" });
+                return Ok(());
+            }
+            let mut lines = transfer::apply_local(&paths, &scan, &ticks)?;
+            let (mut srv, mut acct) = (String::new(), String::new());
+            if let Some(p) = scan.payload(&ticks) {
+                let s = server()?;
+                let a = net::transfer(&s, user.trim(), &password, &p)?;
+                lines.push(format!("on account {}: {} (at the next login)", user.trim(), a.accepted.join(", ")));
+                srv = cfg.login_ip.trim().to_string();
+                acct = user.trim().to_string();
+            }
+            transfer::record(&paths, &ticks, None, &srv, &acct)?;
+            for l in lines {
+                println!("moved: {l}");
+            }
+        }
         "addons" => {
             let server = server()?;
             match addons::ensure(&paths, &server)? {
@@ -329,7 +393,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 println!("sandbox user folder removed");
             }
         }
-        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | update [--check] | settings copy | addons | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
+        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | update [--check] | settings copy | transfer [undo] | addons | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
     }
     Ok(())
 }

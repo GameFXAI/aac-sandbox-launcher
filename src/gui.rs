@@ -14,6 +14,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, SystemTime};
 
+mod transfer_ui;
+use transfer_ui::{XMsg, Xfer};
+
 // ---------------------------------------------------------------------------------------------------------------
 // Look
 // ---------------------------------------------------------------------------------------------------------------
@@ -405,11 +408,14 @@ enum Msg {
     Update(update::Release),
     /// the new launcher is in place: start it
     Updated(Result<std::path::PathBuf, String>),
+    /// the transfer screen's workers
+    Xfer(XMsg),
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
     Play,
+    Transfer,
     Settings,
     Log,
 }
@@ -430,6 +436,9 @@ enum Action {
     RemoveClient,
     RemoveAll,
     OpenFolder,
+    OpenTransfer,
+    Transfer,
+    UndoTransfer,
 }
 
 struct App {
@@ -455,6 +464,7 @@ struct App {
     state: Result<State, String>,
     tab: Tab,
     confirm: Option<(Action, SystemTime)>,
+    xfer: Xfer,
 }
 
 impl App {
@@ -495,8 +505,12 @@ impl App {
                 _ => Tab::Play,
             },
             confirm: None,
+            xfer: Xfer::default(),
         };
         a.refresh();
+        if std::env::var("AAEMU_SANDBOX_TAB").as_deref() == Ok("transfer") {
+            a.open_transfer();
+        }
         // ask the signed manifest for a newer launcher, off the window's thread; silent when there is none
         let (url, tx) = (a.cfg.update_manifest().to_string(), a.tx.clone());
         if !url.is_empty() {
@@ -759,6 +773,9 @@ impl App {
             Action::OpenFolder => {
                 let _ = std::process::Command::new("explorer").arg(&self.paths.root).spawn();
             }
+            Action::OpenTransfer => self.open_transfer(),
+            Action::Transfer => self.start_transfer(),
+            Action::UndoTransfer => self.start_undo(),
         }
     }
 
@@ -813,6 +830,7 @@ impl App {
                     }
                 }
                 Msg::Progress(f) => self.progress = Some(f),
+                Msg::Xfer(m) => self.transfer_msg(m),
                 Msg::Installed(r) => {
                     self.busy = false;
                     self.installing = false;
@@ -856,7 +874,7 @@ impl App {
                 }
             }
         }
-        if self.busy || self.asking || self.child.is_some() || self.confirm.is_some() {
+        if self.busy || self.asking || self.child.is_some() || self.confirm.is_some() || self.xfer.working || self.xfer.scanning || self.xfer.fetching.is_some() {
             ctx.request_repaint_after(Duration::from_millis(400));
         }
     }
@@ -883,8 +901,11 @@ impl App {
         let tabs = Rect::from_min_max(pos2(sb.right() + 40.0, rect.top()), rect.max);
         ui.scope_builder(UiBuilder::new().max_rect(tabs).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (t, name) in [(Tab::Play, "Play"), (Tab::Settings, "Settings"), (Tab::Log, "Log")] {
+            for (t, name) in [(Tab::Play, "Play"), (Tab::Transfer, "Transfer"), (Tab::Settings, "Settings"), (Tab::Log, "Log")] {
                 if nav_tab(ui, name, self.tab == t).clicked() {
+                    if t == Tab::Transfer && self.tab != Tab::Transfer {
+                        *act = Some(Action::OpenTransfer);
+                    }
                     self.tab = t;
                 }
             }
@@ -921,6 +942,10 @@ impl App {
             tick_row(ui, "Own user folder", "Settings, addons and logs never mix with AA Classic's.");
             tick_row(ui, "No reports sent", "Crash and performance uploads are switched off.");
             tick_row(ui, "Separate account", "Your AA Classic login is never asked for.");
+            ui.add_space(10.0);
+            if transfer_ui::transfer_button(ui, 430.0).clicked() {
+                *act = Some(Action::OpenTransfer);
+            }
         });
 
         // right: sign in
@@ -1091,6 +1116,8 @@ impl App {
         } else if self.signup && self.tab == Tab::Play {
             let sub = self.log.last().filter(|l| l.starts_with("sign-up failed")).cloned().unwrap_or_else(|| "Pick a name and a password for this server, and enter your invite code.".into());
             (BLUE, "New account".into(), sub, "CREATE ACCOUNT", Some(Action::SignUp))
+        } else if self.tab == Tab::Transfer && !self.installing && !self.busy {
+            self.transfer_status()
         } else if self.installing {
             (GOLD, "Installing the game".into(), self.log.last().cloned().unwrap_or_default(), "STOP", Some(Action::Stop))
         } else if self.busy {
@@ -1186,6 +1213,7 @@ impl eframe::App for App {
         self.top_bar(root, top, &mut act);
         match self.tab {
             Tab::Play => self.play_tab(root, body, &mut act),
+            Tab::Transfer => self.transfer_tab(root, body, &mut act),
             Tab::Settings => self.settings_tab(root, body, &mut act),
             Tab::Log => self.log_tab(root, body),
         }
