@@ -4,6 +4,7 @@
 use crate::cli::default_aac_dir;
 use crate::core::*;
 use crate::net::{self, Server};
+use crate::{install, vault};
 use eframe::egui::{
     self, Align, Align2, Color32, FontData, FontFamily, FontId, Layout, Margin, Painter, Pos2, Rect, RichText, Sense,
     Shape, Stroke, TextEdit, UiBuilder, Vec2, ViewportCommand, pos2, vec2,
@@ -395,6 +396,11 @@ enum Msg {
     /// the account API's answer to a login: account name and launch ticket
     Ticket(Result<(String, String), String>),
     SignedUp(Result<String, String>),
+    Progress(f32),
+    /// Install game ended: game data version and client build
+    Installed(Result<(u32, String), String>),
+    /// a build pack was imported or exported
+    Pack(Result<String, String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -406,6 +412,11 @@ enum Tab {
 
 enum Action {
     Setup,
+    /// Install game: the launcher's own download
+    Install,
+    Stop,
+    ImportPack,
+    ExportPack,
     Play,
     SignUp,
     ChooseFolder,
@@ -427,6 +438,9 @@ struct App {
     log: Vec<String>,
     busy: bool,
     progress: Option<f32>,
+    /// set to stop a running Install game
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    installing: bool,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     child: Option<(Child, SystemTime)>,
@@ -443,6 +457,10 @@ impl App {
         let mut cfg = Config::load(&paths);
         if cfg.aac_dir.is_none() {
             cfg.aac_dir = default_aac_dir();
+            // a PC without AA Classic: the launcher downloads the game itself
+            if cfg.aac_dir.is_none() && !paths.exe().is_file() {
+                cfg.mode = Mode::Own;
+            }
         }
         let (tx, rx) = channel();
         let mut a = App {
@@ -455,6 +473,8 @@ impl App {
             log: vec![],
             busy: false,
             progress: None,
+            cancel: Default::default(),
+            installing: false,
             tx,
             rx,
             child: None,
@@ -476,8 +496,66 @@ impl App {
         AacInstall::open(&d, &self.paths)
     }
 
+    /// The AA Classic folder, when the mode uses one.
+    fn aac_if_needed(&self) -> Result<Option<AacInstall>, String> {
+        if self.cfg.mode == Mode::Own { Ok(None) } else { self.aac().map(Some) }
+    }
+
     fn refresh(&mut self) {
-        self.state = self.aac().map(|a| status(&self.paths, &a, self.cfg.mode));
+        self.state = self.aac_if_needed().map(|a| status(&self.paths, a.as_ref(), self.cfg.mode));
+    }
+
+    /// Install game: everything in one go on a worker thread; Stop sets `cancel`.
+    fn start_install(&mut self) {
+        let _ = self.cfg.save(&self.paths);
+        self.busy = true;
+        self.installing = true;
+        self.progress = None;
+        self.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (paths, tx, cancel, server) = (self.paths.clone(), self.tx.clone(), self.cancel.clone(), Server::parse(&self.cfg.login_ip));
+        std::thread::spawn(move || {
+            // with a server link, the server says which client builds and which game version it takes
+            let info = match &server {
+                Ok(s @ Server::Api { .. }) => net::info(s).ok(),
+                _ => None,
+            };
+            let plan = install::Plan {
+                to: info.as_ref().and_then(|i| i.builds.iter().filter_map(|b| b.parse::<u32>().ok()).max()),
+                accepted: info.map(|i| i.build_ids).unwrap_or_default(),
+                ..Default::default()
+            };
+            let (t2, t3) = (std::sync::Mutex::new(tx.clone()), std::sync::Mutex::new(tx.clone()));
+            let r = install::run(&paths, &install::Source::default(), &plan, &cancel, &move |l| {
+                let _ = t2.lock().unwrap().send(Msg::Line(l));
+            }, &move |f| {
+                let _ = t3.lock().unwrap().send(Msg::Progress(f));
+            });
+            let _ = tx.send(Msg::Installed(r.map(|d| (d.version, d.build))));
+        });
+    }
+
+    fn import_pack(&mut self) {
+        let Some(file) = rfd::FileDialog::new().set_title("A build pack from a friend").pick_file() else { return };
+        self.busy = true;
+        let (paths, tx, server) = (self.paths.clone(), self.tx.clone(), Server::parse(&self.cfg.login_ip));
+        std::thread::spawn(move || {
+            let accepted = match &server {
+                Ok(s @ Server::Api { .. }) => net::info(s).map(|i| i.build_ids).unwrap_or_default(),
+                _ => vec![],
+            };
+            let r = vault::import(&paths, &file, &accepted).map(|b| format!("client build {} is in the vault ({} files)", &b.id[..12], b.files.len()));
+            let _ = tx.send(Msg::Pack(r));
+        });
+    }
+
+    fn export_pack(&mut self) {
+        let Some(file) = rfd::FileDialog::new().set_title("Save the build pack as").set_file_name("aac-client.aabuild").save_file() else { return };
+        self.busy = true;
+        let (paths, tx) = (self.paths.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let r = vault::add(&paths, &paths.bin()).and_then(|b| vault::export(&paths, &b.id, &file)).map(|b| format!("client build {} written to {}", &b.id[..12], file.display()));
+            let _ = tx.send(Msg::Pack(r));
+        });
     }
 
     fn say(&mut self, s: impl Into<String>) {
@@ -505,7 +583,7 @@ impl App {
     }
 
     fn start_play(&mut self) {
-        let aac = match self.aac() {
+        let aac = match self.aac_if_needed() {
             Ok(a) => a,
             Err(e) => return self.say(e),
         };
@@ -548,13 +626,13 @@ impl App {
         });
     }
 
-    fn launch(&mut self, aac: AacInstall, username: String, token: String) {
+    fn launch(&mut self, aac: Option<AacInstall>, username: String, token: String) {
         let address = match Server::parse(&self.cfg.login_ip).and_then(|s| s.client_address()) {
             Ok(a) => a,
             Err(e) => return self.say(e),
         };
         let l = Launch { username, token, login_ip: address.clone(), game_ip: address, lang: self.cfg.lang.clone(), login_port: self.cfg.login_port };
-        match play(&self.paths, &aac, self.cfg.mode, &l) {
+        match play(&self.paths, aac.as_ref(), self.cfg.mode, &l) {
             Ok(c) => {
                 self.say(format!("client started (pid {})", c.id()));
                 self.child = Some((c, SystemTime::now()));
@@ -591,6 +669,13 @@ impl App {
     fn run(&mut self, a: Action) {
         match a {
             Action::Setup => self.start_setup(),
+            Action::Install => self.start_install(),
+            Action::Stop => {
+                self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.say("stopping after the part that is being downloaded...");
+            }
+            Action::ImportPack => self.import_pack(),
+            Action::ExportPack => self.export_pack(),
             Action::Play => self.start_play(),
             Action::SignUp => self.start_signup(),
             Action::ChooseFolder => {
@@ -642,7 +727,7 @@ impl App {
                 }
                 Msg::Ticket(r) => {
                     self.asking = false;
-                    match (r, self.aac()) {
+                    match (r, self.aac_if_needed()) {
                         (Ok((name, ticket)), Ok(aac)) => {
                             self.cfg.username = name.clone();
                             let _ = self.cfg.save(&self.paths);
@@ -663,6 +748,29 @@ impl App {
                         }
                         Err(e) => self.say(format!("sign-up failed: {e}")),
                     }
+                }
+                Msg::Progress(f) => self.progress = Some(f),
+                Msg::Installed(r) => {
+                    self.busy = false;
+                    self.installing = false;
+                    self.progress = None;
+                    match r {
+                        Ok((version, build)) => {
+                            self.cfg.mode = Mode::Own;
+                            let _ = self.cfg.save(&self.paths);
+                            self.say(format!("installed: game data version {version}, client build {}", &build[..12.min(build.len())]));
+                        }
+                        Err(e) => self.say(format!("install: {e}")),
+                    }
+                    self.refresh();
+                }
+                Msg::Pack(r) => {
+                    self.busy = false;
+                    self.say(match r {
+                        Ok(l) => l,
+                        Err(e) => format!("build pack: {e}"),
+                    });
+                    self.refresh();
                 }
                 Msg::SetupDone(r) => {
                     self.busy = false;
@@ -816,17 +924,38 @@ impl App {
             ui.add_space(12.0);
 
             ui.label(RichText::new("INSTALL MODE").size(11.5).color(MUTED).extra_letter_spacing(1.2));
-            let w = (inner.width() - 12.0) / 2.0;
+            let w = (inner.width() - 24.0) / 3.0;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
-                if mode_card(ui, w, self.cfg.mode == Mode::Standard, !locked, "Standard", "~65 MB", "Copies the program files and shares AA Classic's game data, read-only. Same drive only.") {
+                if mode_card(ui, w, self.cfg.mode == Mode::Standard, !locked, "Standard", "~65 MB", "Copies the program files, shares AA Classic's game data. Same drive only.") {
                     *act = Some(Action::SetMode(Mode::Standard));
                 }
-                if mode_card(ui, w, self.cfg.mode == Mode::Full, !locked, "Full separation", "~45 GB", "Copies everything, including the game data. Nothing is shared with AA Classic.") {
+                if mode_card(ui, w, self.cfg.mode == Mode::Full, !locked, "Full separation", "~45 GB", "Copies everything from your AA Classic folder. Nothing is shared.") {
                     *act = Some(Action::SetMode(Mode::Full));
                 }
+                if mode_card(ui, w, self.cfg.mode == Mode::Own, !locked, "Download", "~46 GB", "No AA Classic needed. Program files come from a friend's build pack.") {
+                    *act = Some(Action::SetMode(Mode::Own));
+                }
             });
-            ui.add_space(12.0);
+            ui.add_space(10.0);
+
+            ui.label(RichText::new("CLIENT BUILD").size(11.5).color(MUTED).extra_letter_spacing(1.2));
+            ui.horizontal(|ui| {
+                let n = vault::builds(&self.paths).len();
+                ui.label(RichText::new(match n {
+                    0 => "none yet".to_string(),
+                    1 => "1 build kept".to_string(),
+                    n => format!("{n} builds kept"),
+                }).color(INK));
+                if ui.add_enabled(!locked, egui::Button::new("Import build pack...")).on_hover_text("A pack is a program: only import one from someone you trust.").clicked() {
+                    *act = Some(Action::ImportPack);
+                }
+                if ui.add_enabled(!locked && self.paths.exe().is_file(), egui::Button::new("Export build pack...")).clicked() {
+                    *act = Some(Action::ExportPack);
+                }
+                ui.label(RichText::new("Only import a pack from someone you trust.").size(12.5).color(MUTED));
+            });
+            ui.add_space(10.0);
 
             ui.label(RichText::new("SANDBOX FOLDER").size(11.5).color(MUTED).extra_letter_spacing(1.2));
             ui.horizontal(|ui| {
@@ -834,9 +963,6 @@ impl App {
                 if ui.button("Open").clicked() {
                     *act = Some(Action::OpenFolder);
                 }
-            });
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
                 let l1 = if self.confirming(&Action::RemoveClient) { "Click again to remove" } else { "Remove client copy" };
                 if ui.add_enabled(!locked, egui::Button::new(RichText::new(l1).color(RED))).clicked() {
                     *act = Some(Action::RemoveClient);
@@ -845,7 +971,6 @@ impl App {
                 if ui.add_enabled(!locked, egui::Button::new(RichText::new(l2).color(RED))).clicked() {
                     *act = Some(Action::RemoveAll);
                 }
-                ui.label(RichText::new("AA Classic itself is never touched.").size(12.5).color(MUTED));
             });
         });
     }
@@ -883,12 +1008,15 @@ impl App {
         let mode = match self.cfg.mode {
             Mode::Standard => "Standard install",
             Mode::Full => "Full separation",
+            Mode::Own => "Download",
         };
         let (dot, title, sub, button, action): (Color32, String, String, &str, Option<Action>) = if self.asking {
             (GOLD, "Asking the server".into(), self.log.last().cloned().unwrap_or_default(), "WAIT", None)
         } else if self.signup && self.tab == Tab::Play {
             let sub = self.log.last().filter(|l| l.starts_with("sign-up failed")).cloned().unwrap_or_else(|| "Pick a name and a password for this server, and enter your invite code.".into());
             (BLUE, "New account".into(), sub, "CREATE ACCOUNT", Some(Action::SignUp))
+        } else if self.installing {
+            (GOLD, "Installing the game".into(), self.log.last().cloned().unwrap_or_default(), "STOP", Some(Action::Stop))
         } else if self.busy {
             (GOLD, "Installing your copy".into(), self.log.last().cloned().unwrap_or_default(), "INSTALLING", None)
         } else if let Some((c, _)) = &self.child {
@@ -896,6 +1024,16 @@ impl App {
         } else {
             match &self.state {
                 Err(e) => (RED, "Choose your AA Classic folder".into(), e.clone(), "SETTINGS", Some(Action::ChooseFolder)),
+                Ok(State::NotSetUp) if self.cfg.mode == Mode::Own => {
+                    let last = self.log.last().filter(|l| l.starts_with("install:") || l.starts_with("build pack:")).cloned();
+                    if vault::builds(&self.paths).is_empty() {
+                        (MUTED, "First: a build pack".into(), last.unwrap_or_else(|| "The program files (65 MB) come from a friend who has the game: ask for a build pack and import it.".into()), "IMPORT PACK", Some(Action::ImportPack))
+                    } else if install::load_state(&self.paths).is_some() {
+                        (GOLD, "Install not finished".into(), last.unwrap_or_else(|| "Goes on where it stopped.".into()), "CONTINUE", Some(Action::Install))
+                    } else {
+                        (MUTED, "Not installed yet".into(), last.unwrap_or_else(|| "Downloads the game data from AA Classic's file host: about 24 GB to download, 46 GB on disk. No account needed.".into()), "INSTALL GAME", Some(Action::Install))
+                    }
+                }
                 Ok(State::NotSetUp) => (
                     MUTED,
                     "Not installed yet".into(),

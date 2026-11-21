@@ -6,6 +6,7 @@ mod core;
 mod gui;
 mod install;
 mod net;
+mod pak;
 mod vault;
 
 fn main() {

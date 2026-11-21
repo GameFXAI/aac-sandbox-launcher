@@ -29,7 +29,8 @@ aac-sandbox-launcher signup --user NAME --password P [--invite CODE] [--server L
 aac-sandbox-launcher vault
 aac-sandbox-launcher pack export FILE [--build ID]
 aac-sandbox-launcher pack import FILE [--server LINK]
-aac-sandbox-launcher install [--to VERSION]
+aac-sandbox-launcher install [--to VERSION] [--build ID] [--offline]
+aac-sandbox-launcher pak info|list|check FILE
 aac-sandbox-launcher remove [--profile]
 ```
 
@@ -41,11 +42,20 @@ A *build* is one `binNext` folder (the client program, about 65 MB), named by th
 
 `binNext` cannot be downloaded without an AA Classic login, and this launcher never asks for one and we never host it. A player without AA Classic gets it from a friend: `pack export` writes one build to a file, `pack import` takes it into the vault. An import checks every file against the pack's list, refuses names that would land outside the vault, and, with a server link, refuses a build the server does not list in its accepted build ids. A pack is a program from whoever gave it to you: only import one from someone you trust.
 
-## Game data without AA Classic
+## The game without AA Classic ("Download" mode)
 
-`install` downloads the game data from AA Classic's own public file host into the launcher's folder: the base `game_pak` as 64 MiB chunks (each checked by size and SHA-256, resumable), then the patch files up to `--to`. No account is used. About 23.6 GB to download and 46 GB of disk.
+`install` (the window's **Install game** button) sets up a playable client on a PC that has no AA Classic folder:
 
-Not finished: merging the patch files into `game_pak`. Until that is built, a copy made by `install` cannot start the game, and the window has no Install game button.
+1. the base `game_pak` from AA Classic's own public file host, as 64 MiB chunks, each checked by size and SHA-256;
+2. the patch files up to the version the server wants (`--to`, or every patch the host has);
+3. the patches merged into `game_pak` (pak.rs): every patch file is checked against the patch's own MD5, the patch's `deleted.txt` is added to the game data's own and the files it names are removed;
+4. `binNext` from the build vault (a friend's build pack).
+
+No account is used, nothing is hosted by us. About 24 GB to download and 46 GB of disk. It can be stopped at any point and goes on where it was; a merge that was cut off is undone from an undo file and done again; a damaged patch is deleted and downloaded again. Running `install` on a finished copy brings it up to a newer version.
+
+The game data file is only ever changed when no other name on disk points at it, so a Standard-mode link to AA Classic's `game_pak` can never be written to.
+
+Checked 2026-11-21 against real files: the 34 patch files 264-297 merged by this code give 6,995 files, each with the size and MD5 that AA Classic's own build-297 `game_pak` lists, and every file's bytes match its MD5. Not yet run: a whole install from an empty disk (no room on the development PC), and a game start on a copy made this way.
 
 ## Build
 
@@ -56,7 +66,6 @@ cargo test
 
 ## Not built yet
 
-- Merging the downloaded patch files into `game_pak`, and setting up a client from the vault without an AA Classic folder; then the Install game button.
 - Addon packs and settings copy.
 - Crash reports sent to our own receiver.
 - Installer and updates.

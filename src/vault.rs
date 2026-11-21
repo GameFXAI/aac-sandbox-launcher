@@ -216,7 +216,6 @@ fn finish(tmp: &Path, dir: &Path, build: &Build) -> Result<(), String> {
     fs::rename(tmp, dir).map_err(|e| format!("cannot store the build: {e}"))
 }
 
-#[allow(dead_code)] // used once a client can be set up without an AA Classic folder
 /// Copies a vault build to `dst` (the client's `binNext`), replacing what is there, and checks the result.
 pub fn restore(paths: &Paths, id: &str, dst: &Path) -> Result<Build, String> {
     let build = find(paths, id).ok_or("that build is not in the vault")?;

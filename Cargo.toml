@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes = "0.8"
 base64 = "0.23.1"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 hex = "0.4.3"
+md-5 = "0.10"
 rfd = "0.18.0"
 ruzstd = "0.9.1"
 serde = { version = "1.0.229", features = ["derive"] }

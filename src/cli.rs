@@ -12,11 +12,13 @@
 //!   aac-sandbox-launcher vault                        the client builds kept, by build id
 //!   aac-sandbox-launcher pack export <file> [--build ID]   one build as a file for a friend
 //!   aac-sandbox-launcher pack import <file> [--server <link>]   a friend's build into the vault
-//!   aac-sandbox-launcher install [--to VERSION] [--max-chunks N]   game data from AA Classic's public file host
+//!   aac-sandbox-launcher install [--to VERSION] [--build ID] [--offline]   the game without an AA Classic folder:
+//!       game data from AA Classic's public file host, patches merged, client build from the vault
+//!   aac-sandbox-launcher pak info|list|check FILE   look at a game archive
 
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{install, vault};
+use crate::{install, pak, vault};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -48,7 +50,8 @@ fn go(args: &[String]) -> Result<(), String> {
         cfg.mode = match m.as_str() {
             "standard" => Mode::Standard,
             "full" => Mode::Full,
-            _ => return Err("--mode is standard or full".into()),
+            "own" => Mode::Own,
+            _ => return Err("--mode is standard, full or own".into()),
         };
     }
     if let Some(s) = opt(args, "--server") {
@@ -64,13 +67,21 @@ fn go(args: &[String]) -> Result<(), String> {
         let d = cfg.aac_dir.clone().or_else(default_aac_dir).ok_or("no AA Classic folder: pass --aac <folder>")?;
         AacInstall::open(&d, &paths)
     };
+    // the launcher's own download needs no AA Classic folder
+    let aac_if_needed = |mode: Mode| -> Result<Option<AacInstall>, String> { if mode == Mode::Own { Ok(None) } else { aac().map(Some) } };
     match cmd {
         "status" => {
-            let a = aac()?;
-            println!("AA Classic: {}", a.root().display());
+            let a = aac_if_needed(cfg.mode)?;
+            match &a {
+                Some(a) => println!("AA Classic: {}", a.root().display()),
+                None => println!("AA Classic: not used (own download)"),
+            }
             println!("launcher folder: {}", paths.root.display());
             println!("mode: {:?}", cfg.mode);
-            println!("copy: {}", status(&paths, &a, cfg.mode).describe());
+            println!("copy: {}", status(&paths, a.as_ref(), cfg.mode).describe());
+            if let Some(s) = install::load_state(&paths) {
+                println!("own download: game data version {}{}", s.pak_version(), if s.finished { "" } else { " (not finished)" });
+            }
             let running = blocking_processes();
             println!("blocking processes: {}", if running.is_empty() { "none".into() } else { running.join(", ") });
         }
@@ -83,7 +94,7 @@ fn go(args: &[String]) -> Result<(), String> {
             println!("ready");
         }
         "play" => {
-            let a = aac()?;
+            let a = aac_if_needed(cfg.mode)?;
             let user = opt(args, "--user").ok_or("--user is required")?;
             let server = server()?;
             let address = server.client_address()?;
@@ -99,7 +110,7 @@ fn go(args: &[String]) -> Result<(), String> {
             };
             let l = Launch { username: user.clone(), token, login_ip: address.clone(), game_ip: address, lang: cfg.lang.clone(), login_port: cfg.login_port };
             let started = SystemTime::now();
-            let mut child = play(&paths, &a, cfg.mode, &l)?;
+            let mut child = play(&paths, a.as_ref(), cfg.mode, &l)?;
             cfg.username = user;
             let _ = cfg.save(&paths);
             log_line(&paths, &format!("client started, pid {}", child.id()));
@@ -162,34 +173,85 @@ fn go(args: &[String]) -> Result<(), String> {
             }
         }
         "install" => {
-            let src = install::Source::default();
-            let (m, sha) = install::fetch_manifest(&src)?;
-            let to: u32 = match opt(args, "--to") {
-                Some(v) => v.parse().map_err(|_| "--to is a version number")?,
-                None => m.version,
+            let to = match opt(args, "--to") {
+                Some(v) => Some(v.parse::<u32>().map_err(|_| "--to is a version number")?),
+                None => None,
             };
-            if to < m.version {
-                return Err(format!("the file host's base is version {}: an older version cannot be installed", m.version));
-            }
-            let max_chunks = opt(args, "--max-chunks").and_then(|n| n.parse().ok()).unwrap_or(0);
-            println!("base version {}: {} chunks, {:.1} GB to download, {:.1} GB on disk", m.version, m.chunks.len(), m.download_size() as f64 / 1e9, m.uncompressed_size as f64 / 1e9);
+            // with a server link, the server says which client builds it takes
+            let accepted = match server() {
+                Ok(s @ Server::Api { .. }) => net::info(&s)?.build_ids,
+                _ => vec![],
+            };
+            let plan = install::Plan { to, build: opt(args, "--build"), accepted, max_chunks: opt(args, "--max-chunks").and_then(|n| n.parse().ok()).unwrap_or(0), offline: flag(args, "--offline") };
             let cancel = std::sync::atomic::AtomicBool::new(false);
-            let started = std::time::Instant::now();
-            let s = install::download_base(&paths, &src, &m, &sha, install::Options { max_chunks, ..Default::default() }, &cancel, &|p| {
-                let secs = started.elapsed().as_secs_f64().max(0.1);
-                println!("chunk {}/{}  {:.1} MB/s", p.chunks_done, p.chunks_total, p.bytes as f64 / 1e6 / secs);
-            })?;
-            log_line(&paths, &format!("install: {}/{} chunks of base {}", s.count_done(), s.num_chunks, s.version));
-            if s.count_done() < s.num_chunks {
-                println!("{} of {} chunks done; run install again to go on", s.count_done(), s.num_chunks);
-                return Ok(());
+            let done = install::run(&paths, &install::Source::default(), &plan, &cancel, &|l| {
+                log_line(&paths, &l);
+                println!("{l}")
+            }, &|_| {})?;
+            cfg.mode = Mode::Own;
+            cfg.save(&paths).map_err(|e| e.to_string())?;
+            println!("installed: game data version {}, client build {}", done.version, done.build);
+        }
+        // tools for looking at and checking archives; not part of a normal install
+        "pak" => {
+            let file = |i: usize| args.get(i).map(PathBuf::from).ok_or("pak info|list|check FILE | pak new FILE | pak apply BASE PATCH...".to_string());
+            match args.get(1).map(String::as_str) {
+                Some("info") => {
+                    let p = pak::Pak::open(&file(2)?, false)?;
+                    let bytes: u64 = p.entries().iter().map(|e| e.size).sum();
+                    println!("{} files, {} bytes of file data, {} free slots", p.entries().len(), bytes, p.free_slots());
+                }
+                Some("list") => {
+                    use std::io::Write;
+                    let p = pak::Pak::open(&file(2)?, false)?;
+                    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+                    for e in p.entries() {
+                        let _ = writeln!(out, "{}	{}	{}", e.name, e.size, hex::encode(e.md5));
+                    }
+                }
+                Some("check") => {
+                    let p = pak::Pak::open(&file(2)?, false)?;
+                    let (bad, unsummed) = p.check(&|done, total| {
+                        if done % 20000 == 0 {
+                            println!("{done}/{total}");
+                        }
+                    })?;
+                    println!("{} files read; {} have no checksum in the table; {} do not match it", p.entries().len(), unsummed, bad.len());
+                    for name in bad.iter().take(20) {
+                        println!("  {name}");
+                    }
+                    if !bad.is_empty() {
+                        return Err("the archive has damaged files".into());
+                    }
+                }
+                Some("cat") => {
+                    use std::io::Write;
+                    let p = pak::Pak::open(&file(2)?, false)?;
+                    let name = args.get(3).ok_or("pak cat FILE NAME")?;
+                    let e = p.get(name).ok_or("no such file in the archive")?;
+                    std::io::stdout().lock().write_all(&p.read(e, 1 << 30)?).map_err(|e| e.to_string())?;
+                }
+                Some("put") => {
+                    let mut p = pak::Pak::open(&file(2)?, true)?;
+                    let name = args.get(3).ok_or("pak put FILE NAME LOCALFILE")?;
+                    let body = std::fs::read(file(4)?).map_err(|e| e.to_string())?;
+                    p.put(name, &mut &body[..], body.len() as u64, None, &pak::Entry::default())?;
+                    p.save()?;
+                }
+                Some("new") => {
+                    pak::Pak::create(&file(2)?)?;
+                }
+                Some("apply") => {
+                    let mut base = pak::Pak::open(&file(2)?, true)?;
+                    for patch in &args[3..] {
+                        let started = std::time::Instant::now();
+                        let m = pak::apply_patch(&mut base, &pak::Pak::open(&PathBuf::from(patch), false)?, &|| false)?;
+                        base.save()?;
+                        println!("{patch}: replaced={} moved={} added={} deleted={} -> {} files ({:.1}s)", m.replaced, m.moved, m.added, m.deleted, base.entries().len(), started.elapsed().as_secs_f64());
+                    }
+                }
+                _ => return Err("pak info|list|check FILE | pak new FILE | pak apply BASE PATCH...".into()),
             }
-            println!("base file complete");
-            for v in m.version + 1..=to {
-                let size = install::download_patch(&paths, &src, v, &cancel)?;
-                println!("patch {v}: {:.1} MB", size as f64 / 1e6);
-            }
-            println!("downloads complete. Not built yet: merging the patches into game_pak, so this copy cannot start the game yet.");
         }
         "remove" => {
             remove_client(&paths)?;
@@ -199,7 +261,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 println!("sandbox user folder removed");
             }
         }
-        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | vault | pack export FILE | pack import FILE | install [--to V]".into()),
+        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
     }
     Ok(())
 }

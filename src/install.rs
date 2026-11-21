@@ -111,6 +111,12 @@ pub struct InstallState {
     pub num_chunks: usize,
     /// one bit per chunk, base64
     pub done: String,
+    /// the last patch merged into the game data (0: none yet, the data is the base version)
+    #[serde(default)]
+    pub merged: u32,
+    /// the game data was moved to `client\game_pak`: the copy can be played
+    #[serde(default)]
+    pub finished: bool,
 }
 
 impl InstallState {
@@ -121,6 +127,13 @@ impl InstallState {
     }
     pub fn is_done(&self, i: usize) -> bool {
         i < self.num_chunks && self.bits()[i / 8] & (1 << (i % 8)) != 0
+    }
+    pub fn base_complete(&self) -> bool {
+        self.count_done() == self.num_chunks
+    }
+    /// The version the game data is at.
+    pub fn pak_version(&self) -> u32 {
+        self.merged.max(self.version)
     }
     pub fn count_done(&self) -> usize {
         (0..self.num_chunks).filter(|&i| self.is_done(i)).count()
@@ -243,7 +256,7 @@ impl Default for Options {
 pub fn download_base(paths: &Paths, src: &Source, manifest: &Manifest, manifest_sha: &str, opt: Options, cancel: &AtomicBool, progress: &(dyn Fn(Progress) + Sync)) -> Result<InstallState, String> {
     let client = paths.client();
     fs::create_dir_all(&client).map_err(|e| format!("cannot create {}: {e}", client.display()))?;
-    let fresh = InstallState { manifest: manifest_sha.to_string(), version: manifest.version, num_chunks: manifest.chunks.len(), done: String::new() };
+    let fresh = InstallState { manifest: manifest_sha.to_string(), version: manifest.version, num_chunks: manifest.chunks.len(), done: String::new(), merged: 0, finished: false };
     let state = match load_state(paths) {
         Some(s) if s.manifest == fresh.manifest && s.num_chunks == fresh.num_chunks && staging(paths).is_file() => s,
         _ => {
@@ -373,6 +386,250 @@ pub fn download_patch(paths: &Paths, src: &Source, v: u32, cancel: &AtomicBool) 
         }
     }
     Err(format!("patch {v} failed after {TRIES} tries: {last}"))
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Merging the patches, finishing, the whole install
+// ---------------------------------------------------------------------------------------------------------------
+
+/// The game data file as it is now: the staging file until the install is finished, `game_pak` after.
+pub fn pak_file(paths: &Paths, s: &InstallState) -> PathBuf {
+    if s.finished { paths.pak() } else { staging(paths) }
+}
+
+fn undo_file(paths: &Paths) -> PathBuf {
+    paths.client().join("merge_undo.bin")
+}
+
+fn write_undo(paths: &Paths, end: u64, table: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let tmp = undo_file(paths).with_extension("new");
+    let go = || -> std::io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(&end.to_le_bytes())?;
+        f.write_all(table)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, undo_file(paths))
+    };
+    go().map_err(|e| format!("cannot save the undo file: {e}"))
+}
+
+fn read_undo(paths: &Paths) -> Option<(u64, Vec<u8>)> {
+    let b = fs::read(undo_file(paths)).ok()?;
+    if b.len() < 8 + 512 {
+        return None;
+    }
+    Some((u64::from_le_bytes(b[..8].try_into().unwrap()), b[8..].to_vec()))
+}
+
+/// Called when another kind of set up replaces the game data: the finished install is no longer what is on disk.
+pub fn forget_finished(paths: &Paths) {
+    if load_state(paths).is_some_and(|s| s.finished) {
+        let _ = fs::remove_file(state_file(paths));
+        let _ = fs::remove_file(undo_file(paths));
+    }
+}
+
+/// Merges the downloaded patches up to version `to` into the game data. The file table as it was before is kept
+/// in an undo file until the new one is written, so a merge that was cut off (power, crash, a damaged patch) is
+/// undone and done again. A patch that fails its own checksums is deleted so it is downloaded again.
+pub fn merge(paths: &Paths, to: u32, cancel: &AtomicBool, log: &dyn Fn(String)) -> Result<InstallState, String> {
+    use crate::pak::{Pak, apply_patch};
+    let mut s = load_state(paths).ok_or("nothing is installed yet")?;
+    if !s.base_complete() {
+        return Err("the base game data is not complete yet".into());
+    }
+    let file = pak_file(paths, &s);
+    if let Some((end, table)) = read_undo(paths) {
+        Pak::restore_table(&file, end, &table)?;
+        let _ = fs::remove_file(undo_file(paths));
+        log("an unfinished merge was undone".into());
+    }
+    if s.pak_version() >= to {
+        return Ok(s);
+    }
+    let mut base = Pak::open(&file, true)?;
+    let (end, table) = base.table_backup();
+    write_undo(paths, end, &table)?;
+    drop(table);
+    let mut failed = None;
+    for v in s.pak_version() + 1..=to {
+        let path = patch_dir(paths).join(format!("pak{v}"));
+        let r = match Pak::open(&path, false) {
+            Ok(patch) => apply_patch(&mut base, &patch, &|| cancel.load(Ordering::SeqCst)).map_err(|e| (e.contains("damaged") || e.contains("early"), e)),
+            // a patch that cannot even be opened was cut short or is not a patch
+            Err(e) => Err((true, e)),
+        };
+        match r {
+            Ok(m) => log(format!("patch {v}: {} files changed, {} added, {} removed", m.replaced + m.moved, m.added, m.deleted)),
+            Err((damaged, e)) => {
+                if damaged {
+                    let _ = fs::remove_file(&path);
+                    failed = Some(format!("patch {v} is damaged and will be downloaded again ({e})"));
+                } else {
+                    failed = Some(format!("patch {v}: {e}"));
+                }
+                break;
+            }
+        }
+    }
+    if let Some(e) = failed {
+        // put the old table back: the data is again what it was before this merge
+        drop(base);
+        let (end, table) = read_undo(paths).ok_or("the undo file is gone")?;
+        Pak::restore_table(&file, end, &table)?;
+        let _ = fs::remove_file(undo_file(paths));
+        return Err(e);
+    }
+    base.save()?;
+    drop(base);
+    // first the undo file, then the state: cut off in between, the patches are merged once more, which is harmless
+    fs::remove_file(undo_file(paths)).map_err(|e| e.to_string())?;
+    s.merged = to;
+    save_state(paths, &s)?;
+    Ok(s)
+}
+
+/// Moves the merged game data to `client\game_pak` and drops the patch files.
+pub fn finish(paths: &Paths) -> Result<InstallState, String> {
+    let mut s = load_state(paths).ok_or("nothing is installed yet")?;
+    if !s.finished {
+        let pak = paths.pak();
+        if staging(paths).is_file() {
+            if fs::symlink_metadata(&pak).is_ok() {
+                // only our name for a file: a link to AA Classic's game data keeps its data there
+                fs::remove_file(&pak).map_err(|e| format!("cannot remove the old game_pak: {e}"))?;
+            }
+            fs::rename(staging(paths), &pak).map_err(|e| format!("cannot move the game data into place: {e}"))?;
+        } else if !pak.is_file() {
+            return Err("the downloaded game data is gone".into());
+        }
+        s.finished = true;
+        save_state(paths, &s)?;
+    }
+    let _ = fs::remove_dir_all(patch_dir(paths));
+    Ok(s)
+}
+
+/// Which client build to use: the one asked for, else the one build in the vault the server accepts, else the
+/// only build in the vault.
+pub fn choose_build(paths: &Paths, wanted: Option<&str>, accepted: &[String]) -> Result<String, String> {
+    let have: Vec<String> = crate::vault::builds(paths).into_iter().map(|b| b.id).collect();
+    if let Some(w) = wanted {
+        return have.iter().find(|id| id.starts_with(w)).cloned().ok_or(format!("build {w} is not in the vault"));
+    }
+    if have.is_empty() {
+        return Err("there is no client build yet: ask a friend for a build pack and import it".into());
+    }
+    if !accepted.is_empty() {
+        return have.iter().find(|id| accepted.contains(id)).cloned().ok_or("none of the client builds you have is one the server accepts: ask for its build pack".to_string());
+    }
+    match have.as_slice() {
+        [one] => Ok(one.clone()),
+        _ => Err("there are several client builds in the vault: say which one".into()),
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Plan {
+    /// the version to end at; None = every patch the file host has
+    pub to: Option<u32>,
+    /// a build id (or its start) from the vault; None = chosen by `choose_build`
+    pub build: Option<String>,
+    /// the build ids the server accepts
+    pub accepted: Vec<String>,
+    /// download at most this many chunks in this run (0 = all); for tests
+    pub max_chunks: usize,
+    /// use only what is on disk already
+    pub offline: bool,
+}
+
+pub struct Installed {
+    pub version: u32,
+    pub build: String,
+}
+
+/// The whole "Install game": base data, patches, merge, client build from the vault. Can be stopped and run
+/// again; every step goes on where it was. Also brings a finished install up to a newer version.
+pub fn run(paths: &Paths, src: &Source, plan: &Plan, cancel: &AtomicBool, log: &(dyn Fn(String) + Sync), progress: &(dyn Fn(f32) + Sync)) -> Result<Installed, String> {
+    // no build, no game: say so before 22 GB are downloaded
+    let build = choose_build(paths, plan.build.as_deref(), &plan.accepted)?;
+    let mut state = load_state(paths);
+    // cut off between moving the file into place and noting it
+    if let Some(s) = &state {
+        if !s.finished && s.base_complete() && !staging(paths).is_file() && paths.pak().is_file() && crate::core::link_count(&paths.pak()).is_ok_and(|n| n == 1) {
+            state = Some(finish(paths)?);
+        }
+    }
+    let ready = state.as_ref().is_some_and(|s| s.finished || s.base_complete() && staging(paths).is_file());
+    if !ready {
+        if plan.offline {
+            return Err("the base game data is not on disk yet".into());
+        }
+        let (m, sha) = fetch_manifest(src)?;
+        log(format!("game data version {}: {:.1} GB to download, {:.1} GB on disk", m.version, m.download_size() as f64 / 1e9, m.uncompressed_size as f64 / 1e9));
+        let started = std::time::Instant::now();
+        let s = download_base(paths, src, &m, &sha, Options { max_chunks: plan.max_chunks, ..Default::default() }, cancel, &|p| {
+            progress(p.chunks_done as f32 / p.chunks_total.max(1) as f32);
+            if p.chunks_done % 10 == 0 || p.chunks_done == p.chunks_total {
+                log(format!("game data: {} of {} parts, {:.1} MB/s", p.chunks_done, p.chunks_total, p.bytes as f64 / 1e6 / started.elapsed().as_secs_f64().max(0.1)));
+            }
+        })?;
+        if cancel.load(Ordering::SeqCst) {
+            return Err("stopped".into());
+        }
+        if !s.base_complete() {
+            return Err(format!("{} of {} parts are done; run it again to go on", s.count_done(), s.num_chunks));
+        }
+        log("the base game data is complete".into());
+    }
+    let mut last = String::new();
+    for _round in 0..3 {
+        let s = load_state(paths).ok_or("the install state is gone")?;
+        if plan.to.is_some_and(|t| t < s.pak_version()) {
+            return Err(format!("the game data is at version {} already: an older version cannot be installed", s.pak_version()));
+        }
+        // the patches: up to the version asked for, or until the file host has no next one
+        let mut to = s.pak_version();
+        loop {
+            let v = to + 1;
+            if plan.to.is_some_and(|t| v > t) {
+                break;
+            }
+            if !patch_dir(paths).join(format!("pak{v}")).is_file() {
+                if plan.offline {
+                    if plan.to.is_some() {
+                        return Err(format!("patch {v} is not on disk"));
+                    }
+                    break;
+                }
+                match download_patch(paths, src, v, cancel) {
+                    Ok(size) => log(format!("patch {v} downloaded ({:.1} MB)", size as f64 / 1e6)),
+                    Err(e) if e.contains("is not on the file host") && plan.to.is_none() => break,
+                    Err(e) => return Err(e),
+                }
+            }
+            to = v;
+        }
+        if to > s.pak_version() {
+            log(format!("merging the patches up to version {to} ..."));
+        }
+        match merge(paths, to, cancel, log) {
+            Ok(_) => {
+                let s = finish(paths)?;
+                crate::vault::restore(paths, &build, &paths.bin())?;
+                log(format!("ready: game data version {}, client build {}", s.pak_version(), &build[..12.min(build.len())]));
+                return Ok(Installed { version: s.pak_version(), build });
+            }
+            Err(e) if e.contains("downloaded again") && !plan.offline => {
+                log(e.clone());
+                last = e;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
 }
 
 #[cfg(test)]
@@ -573,5 +830,148 @@ mod tests {
         download_patch(&paths, &h.source(), 264, &AtomicBool::new(false)).unwrap();
         assert_eq!(h.hits("/pak264"), before);
         assert!(download_patch(&paths, &h.source(), 298, &AtomicBool::new(false)).unwrap_err().contains("not on the file host"));
+    }
+
+    // --- merge and the whole install ---------------------------------------------------------------------------
+
+    use crate::pak::{Entry, Pak};
+
+    /// An archive with these files, as bytes.
+    fn archive(dir: &Path, name: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
+        let path = dir.join(name);
+        let _ = fs::remove_file(&path);
+        let mut p = Pak::create(&path).unwrap();
+        for (n, body) in files {
+            p.put(n, &mut &body[..], body.len() as u64, None, &Entry::default()).unwrap();
+        }
+        p.save().unwrap();
+        drop(p);
+        fs::read(&path).unwrap()
+    }
+
+    fn file(p: &Pak, name: &str) -> Vec<u8> {
+        p.read(p.get(name).unwrap(), 1 << 20).unwrap()
+    }
+
+    /// A host with a base (a, b, c), patch 264 (a larger, d new) and patch 265 (removes b), and a vault build.
+    fn game(d: &Path, paths: &Paths, h: &Host) -> String {
+        let big = data(3000);
+        h.publish(&archive(d, "base", &[("game/a.txt", b"a1"), ("game/b.txt", b"b1"), ("game/c.txt", b"c1")]), 1024);
+        h.put("/pak264", archive(d, "p264", &[("game/a.txt", &big), ("game/d.txt", b"d1")]));
+        h.put("/pak265", archive(d, "p265", &[("game/c.txt", b"c2"), ("deleted.txt", b"game\\b.txt\r\n")]));
+        let bin = d.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("archeage.exe"), b"exe").unwrap();
+        crate::vault::add(paths, &bin).unwrap().id
+    }
+
+    fn install(paths: &Paths, h: &Host, plan: &Plan) -> Result<Installed, String> {
+        super::run(paths, &h.source(), plan, &AtomicBool::new(false), &|_| {}, &|_| {})
+    }
+
+    fn check_265(paths: &Paths) {
+        let p = Pak::open(&paths.pak(), false).unwrap();
+        assert_eq!(p.entries().len(), 4);
+        assert_eq!(file(&p, "deleted.txt"), b"game\\b.txt\r\n");
+        assert_eq!(file(&p, "game/a.txt"), data(3000));
+        assert_eq!(file(&p, "game/c.txt"), b"c2");
+        assert_eq!(file(&p, "game/d.txt"), b"d1");
+        assert!(p.get("game/b.txt").is_none());
+        assert_eq!(p.check(&|_, _| {}).unwrap(), (vec![], 0));
+    }
+
+    #[test]
+    fn installs_the_game_without_an_aa_classic_folder_and_updates_it_later() {
+        let d = tmp("game");
+        let (paths, h) = (Paths::at(d.join("ours")), host());
+        assert!(install(&paths, &h, &Plan::default()).is_err_and(|e| e.contains("build pack")), "no build, no download");
+        assert_eq!(h.hits("/manifest.json"), 0);
+        let build = game(&d, &paths, &h);
+        let done = install(&paths, &h, &Plan::default()).unwrap();
+        assert_eq!((done.version, &done.build), (265, &build));
+        check_265(&paths);
+        assert!(!staging(&paths).exists() && !patch_dir(&paths).exists() && !undo_file(&paths).exists());
+        assert_eq!(fs::read(paths.exe()).unwrap(), b"exe");
+        assert_eq!(crate::core::status(&paths, None, crate::core::Mode::Own), crate::core::State::Ready);
+        // again: nothing to download but the question whether there is a next patch
+        let before = h.hits("/manifest.json");
+        assert_eq!(install(&paths, &h, &Plan::default()).unwrap().version, 265);
+        assert_eq!(h.hits("/manifest.json"), before);
+        // AA Classic publishes a patch: the finished install takes it
+        h.put("/pak266", archive(&d, "p266", &[("game/e.txt", b"e1")]));
+        assert_eq!(install(&paths, &h, &Plan::default()).unwrap().version, 266);
+        let p = Pak::open(&paths.pak(), false).unwrap();
+        assert_eq!(file(&p, "game/e.txt"), b"e1");
+        assert_eq!(file(&p, "game/a.txt"), data(3000));
+        // an older version cannot be asked for
+        assert!(install(&paths, &h, &Plan { to: Some(264), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn stops_at_the_version_asked_for() {
+        let d = tmp("to");
+        let (paths, h) = (Paths::at(d.join("ours")), host());
+        game(&d, &paths, &h);
+        assert_eq!(install(&paths, &h, &Plan { to: Some(264), ..Default::default() }).unwrap().version, 264);
+        let p = Pak::open(&paths.pak(), false).unwrap();
+        assert_eq!(file(&p, "game/b.txt"), b"b1");
+        assert_eq!(h.hits("/pak265"), 0);
+        assert!(install(&paths, &h, &Plan { to: Some(270), ..Default::default() }).is_err_and(|e| e.contains("not on the file host")));
+    }
+
+    #[test]
+    fn a_damaged_patch_is_fetched_again_and_the_data_is_unharmed() {
+        let d = tmp("damaged");
+        let (paths, h) = (Paths::at(d.join("ours")), host());
+        game(&d, &paths, &h);
+        run(&paths, &h, 0).unwrap();
+        // patch 264 on disk was cut short, 265 is fine
+        let good = archive(&d, "p264", &[("game/a.txt", &data(3000)), ("game/d.txt", b"d1")]);
+        fs::create_dir_all(patch_dir(&paths)).unwrap();
+        fs::write(patch_dir(&paths).join("pak264"), &good[..good.len() / 2]).unwrap();
+        let err = merge(&paths, 264, &AtomicBool::new(false), &|_| {}).unwrap_err();
+        assert!(err.contains("downloaded again"), "{err}");
+        assert!(!patch_dir(&paths).join("pak264").exists() && !undo_file(&paths).exists());
+        let p = Pak::open(&staging(&paths), false).unwrap();
+        assert_eq!((p.entries().len(), file(&p, "game/a.txt")), (3, b"a1".to_vec()));
+        drop(p);
+        // the same through the whole install: it downloads the patch again and ends well
+        fs::write(patch_dir(&paths).join("pak264"), &good[..good.len() / 2]).unwrap();
+        assert_eq!(install(&paths, &h, &Plan::default()).unwrap().version, 265);
+        assert_eq!(h.hits("/pak264"), 1);
+        check_265(&paths);
+    }
+
+    #[test]
+    fn a_merge_that_was_cut_off_is_undone_and_done_again() {
+        let d = tmp("cut");
+        let (paths, h) = (Paths::at(d.join("ours")), host());
+        game(&d, &paths, &h);
+        run(&paths, &h, 0).unwrap();
+        // as if the power went during a merge: undo file written, data written over the table, nothing saved
+        let mut base = Pak::open(&staging(&paths), true).unwrap();
+        let (end, table) = base.table_backup();
+        write_undo(&paths, end, &table).unwrap();
+        let junk = data(9000);
+        base.put("game/a.txt", &mut &junk[..], 9000, None, &Entry::default()).unwrap();
+        drop(base);
+        assert!(Pak::open(&staging(&paths), false).is_err());
+        let said = Mutex::new(Vec::new());
+        let done = super::run(&paths, &h.source(), &Plan::default(), &AtomicBool::new(false), &|l| said.lock().unwrap().push(l), &|_| {}).unwrap();
+        assert_eq!(done.version, 265);
+        assert!(said.lock().unwrap().iter().any(|l| l.contains("unfinished merge was undone")));
+        check_265(&paths);
+    }
+
+    #[test]
+    fn game_data_linked_to_another_file_is_never_merged_into() {
+        let d = tmp("linked");
+        let (paths, h) = (Paths::at(d.join("ours")), host());
+        game(&d, &paths, &h);
+        run(&paths, &h, 0).unwrap();
+        fs::hard_link(staging(&paths), d.join("elsewhere")).unwrap();
+        let before = fs::read(d.join("elsewhere")).unwrap();
+        assert!(install(&paths, &h, &Plan::default()).is_err_and(|e| e.contains("linked")));
+        assert_eq!(fs::read(d.join("elsewhere")).unwrap(), before);
     }
 }

@@ -79,6 +79,8 @@ pub enum Mode {
     Standard,
     /// Copy `binNext` and `game_pak` (about 45 GB): nothing shared with AA Classic.
     Full,
+    /// Game data downloaded by the launcher itself (install.rs), `binNext` from the build vault: no AA Classic folder.
+    Own,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -236,10 +238,16 @@ fn walk(base: &Path, dir: &Path, f: &mut dyn FnMut(&str, &fs::Metadata)) -> io::
     Ok(())
 }
 
-pub fn status(paths: &Paths, aac: &AacInstall, mode: Mode) -> State {
+pub fn status(paths: &Paths, aac: Option<&AacInstall>, mode: Mode) -> State {
     if !paths.exe().is_file() {
         return State::NotSetUp;
     }
+    if mode == Mode::Own {
+        // our own download: ready once the install was finished; nothing of AA Classic is looked at
+        let done = crate::install::load_state(paths).is_some_and(|s| s.finished) && paths.pak().is_file();
+        return if done { State::Ready } else { State::NotSetUp };
+    }
+    let Some(aac) = aac else { return State::NotSetUp };
     // AA Classic's launcher keeps a SHA-256 of every binNext file; our copy carries the list it was made from
     match (crate::vault::recorded_hashes(&aac.bin()), crate::vault::recorded_hashes(&paths.bin())) {
         (Some(a), Some(b)) => {
@@ -255,6 +263,7 @@ pub fn status(paths: &Paths, aac: &AacInstall, mode: Mode) -> State {
     }
     let pak_ok = match mode {
         Mode::Standard => same_file(&paths.pak(), &aac.pak()).unwrap_or(false),
+        Mode::Own => false,
         Mode::Full => match (fs::metadata(paths.pak()), fs::metadata(aac.pak())) {
             (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok() && !same_file(&paths.pak(), &aac.pak()).unwrap_or(false),
             _ => false,
@@ -269,6 +278,9 @@ pub fn status(paths: &Paths, aac: &AacInstall, mode: Mode) -> State {
 
 /// Builds or refreshes our copy. `log` gets progress lines.
 pub fn setup(paths: &Paths, aac: &AacInstall, mode: Mode, log: &dyn Fn(String)) -> Result<(), String> {
+    if mode == Mode::Own {
+        return Err("this mode is set up by Install game, not from an AA Classic folder".into());
+    }
     let client = paths.client();
     ensure_ours(paths, &client)?;
     fs::create_dir_all(&client).map_err(|e| format!("cannot create {}: {e}", client.display()))?;
@@ -294,7 +306,10 @@ pub fn setup(paths: &Paths, aac: &AacInstall, mode: Mode, log: &dyn Fn(String)) 
         // removes only our name for the file; with a hardlink the AA Classic file keeps its data
         fs::remove_file(&pak).map_err(|e| format!("cannot remove the old game_pak: {e}"))?;
     }
+    // the file is no longer our own download
+    crate::install::forget_finished(paths);
     match mode {
+        Mode::Own => unreachable!(),
         Mode::Standard => {
             hardlink(&pak, &aac.pak()).map_err(|e| {
                 if e.raw_os_error() == Some(17) {
@@ -312,7 +327,7 @@ pub fn setup(paths: &Paths, aac: &AacInstall, mode: Mode, log: &dyn Fn(String)) 
             log("game_pak copied".into());
         }
     }
-    match status(paths, aac, mode) {
+    match status(paths, Some(aac), mode) {
         State::Ready => Ok(()),
         s => Err(format!("set up finished but the copy is not ready: {}", s.describe())),
     }
@@ -430,7 +445,7 @@ pub fn client_env(paths: &Paths) -> (Vec<(String, String)>, Vec<String>) {
 }
 
 /// Starts our client. Refuses when AA Classic or its launcher is running, or the copy is not ready.
-pub fn play(paths: &Paths, aac: &AacInstall, mode: Mode, l: &Launch) -> Result<Child, String> {
+pub fn play(paths: &Paths, aac: Option<&AacInstall>, mode: Mode, l: &Launch) -> Result<Child, String> {
     let running = blocking_processes();
     if !running.is_empty() {
         return Err(format!("close these first: {}", running.join(", ")));
@@ -505,6 +520,19 @@ fn file_id(p: &Path) -> io::Result<(u32, u64)> {
 }
 
 use std::os::windows::fs::OpenOptionsExt;
+
+/// How many names the file has on disk; more than one means it is hard-linked somewhere else.
+pub fn link_count(p: &Path) -> io::Result<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+    let f = fs::OpenOptions::new().access_mode(0x80 /* FILE_READ_ATTRIBUTES */).open(p)?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(f.as_raw_handle() as _, &mut info) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.nNumberOfLinks)
+}
 
 /// Are the two names the same file on disk (a hardlink)?
 pub fn same_file(a: &Path, b: &Path) -> io::Result<bool> {
@@ -582,9 +610,9 @@ mod tests {
         let _lock = fs::OpenOptions::new().read(true).share_mode(0).open(aac_dir.join("sfcl")).unwrap();
         let paths = Paths::at(t.join("sandbox"));
         let aac = AacInstall::open(&aac_dir, &paths).unwrap();
-        assert_eq!(status(&paths, &aac, Mode::Standard), State::NotSetUp);
+        assert_eq!(status(&paths, Some(&aac), Mode::Standard), State::NotSetUp);
         setup(&paths, &aac, Mode::Standard, &|_| {}).unwrap();
-        assert_eq!(status(&paths, &aac, Mode::Standard), State::Ready);
+        assert_eq!(status(&paths, Some(&aac), Mode::Standard), State::Ready);
         assert!(same_file(&paths.pak(), &aac.pak()).unwrap());
         assert!(paths.bin().join("locales").join("en.txt").is_file());
         for bad in ["sfcl", "ArcheAge Classic Launcher.exe", "features.json"] {
@@ -604,10 +632,10 @@ mod tests {
         let paths = Paths::at(t.join("sandbox"));
         let aac = AacInstall::open(&aac_dir, &paths).unwrap();
         setup(&paths, &aac, Mode::Full, &|_| {}).unwrap();
-        assert_eq!(status(&paths, &aac, Mode::Full), State::Ready);
+        assert_eq!(status(&paths, Some(&aac), Mode::Full), State::Ready);
         assert!(!same_file(&paths.pak(), &aac.pak()).unwrap());
         // a hardlinked copy is not a Full copy
-        assert_eq!(status(&paths, &aac, Mode::Standard), State::PakOutdated);
+        assert_eq!(status(&paths, Some(&aac), Mode::Standard), State::PakOutdated);
     }
 
     #[test]
@@ -620,11 +648,11 @@ mod tests {
         let paths = Paths::at(d.join("ours"));
         let aac = AacInstall::open(&aac_dir, &paths).unwrap();
         setup(&paths, &aac, Mode::Standard, &|_| {}).unwrap();
-        assert_eq!(status(&paths, &aac, Mode::Standard), State::Ready);
+        assert_eq!(status(&paths, Some(&aac), Mode::Standard), State::Ready);
         assert_eq!(crate::vault::builds(&paths).len(), 1);
         // the same files with a newer list: AA Classic says a file changed
         fs::write(aac_dir.join("binNext").join(".state.json"), state("bb")).unwrap();
-        assert_eq!(status(&paths, &aac, Mode::Standard), State::BinOutdated);
+        assert_eq!(status(&paths, Some(&aac), Mode::Standard), State::BinOutdated);
     }
 
     #[test]
@@ -636,9 +664,9 @@ mod tests {
         let aac = AacInstall::open(&aac_dir, &paths).unwrap();
         setup(&paths, &aac, Mode::Standard, &|_| {}).unwrap();
         fs::write(aac_dir.join("binNext").join("x2game.dll"), b"dll v2").unwrap();
-        assert_eq!(status(&paths, &aac, Mode::Standard), State::BinOutdated);
+        assert_eq!(status(&paths, Some(&aac), Mode::Standard), State::BinOutdated);
         setup(&paths, &aac, Mode::Standard, &|_| {}).unwrap();
-        assert_eq!(status(&paths, &aac, Mode::Standard), State::Ready);
+        assert_eq!(status(&paths, Some(&aac), Mode::Standard), State::Ready);
     }
 
     #[test]
