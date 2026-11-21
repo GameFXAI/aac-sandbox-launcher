@@ -4,7 +4,7 @@
 use crate::cli::default_aac_dir;
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{addons, install, update, vault};
+use crate::{addons, install, settings, update, vault};
 use eframe::egui::{
     self, Align, Align2, Color32, FontData, FontFamily, FontId, Layout, Margin, Painter, Pos2, Rect, RichText, Sense,
     Shape, Stroke, TextEdit, UiBuilder, Vec2, ViewportCommand, pos2, vec2,
@@ -422,6 +422,7 @@ enum Action {
     ImportPack,
     ExportPack,
     UpdateLauncher,
+    CopySettings,
     Play,
     SignUp,
     ChooseFolder,
@@ -712,6 +713,13 @@ impl App {
                     });
                 }
             }
+            Action::CopySettings => {
+                let r = settings::real_file().ok_or("no AA Classic settings file was found".to_string()).and_then(|f| settings::copy_from(&self.paths, &f));
+                self.say(match r {
+                    Ok(n) => format!("{n} display and sound settings copied from AA Classic (its file was only read)"),
+                    Err(e) => format!("settings: {e}"),
+                });
+            }
             Action::ImportPack => self.import_pack(),
             Action::ExportPack => self.export_pack(),
             Action::Play => self.start_play(),
@@ -982,8 +990,14 @@ impl App {
                     *act = Some(Action::ChooseFolder);
                 }
             });
-            ui.label(RichText::new("Only binNext and game_pak are read. Nothing in this folder is ever written.").size(12.5).color(MUTED));
-            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Only binNext and game_pak are read. Nothing in this folder is ever written.").size(12.5).color(MUTED));
+                let hint = "Takes your display, quality and sound settings from AA Classic's system.cfg into this client's own. That file is only read. No server address, language or account data is taken.";
+                if ui.add_enabled(!locked && settings::real_file().is_some(), egui::Button::new("Copy my graphics settings")).on_hover_text(hint).clicked() {
+                    *act = Some(Action::CopySettings);
+                }
+            });
+            ui.add_space(4.0);
 
             ui.label(RichText::new("INSTALL MODE").size(11.5).color(MUTED).extra_letter_spacing(1.2));
             let w = (inner.width() - 24.0) / 3.0;
@@ -999,7 +1013,7 @@ impl App {
                     *act = Some(Action::SetMode(Mode::Own));
                 }
             });
-            ui.add_space(10.0);
+            ui.add_space(6.0);
 
             ui.label(RichText::new("CLIENT BUILD").size(11.5).color(MUTED).extra_letter_spacing(1.2));
             ui.horizontal(|ui| {

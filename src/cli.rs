@@ -11,6 +11,7 @@
 //!   aac-sandbox-launcher remove [--profile]
 //!   aac-sandbox-launcher update [--check]              a newer launcher from the signed manifest
 //!   aac-sandbox-launcher manifest keygen|make|sign     for the owner: sign a release (see update.rs)
+//!   aac-sandbox-launcher settings copy [--from FILE]   your display and sound settings from AA Classic (read only)
 //!   aac-sandbox-launcher addons [--server <link>]     install the addons the server names (play does this too)
 //!   aac-sandbox-launcher vault                        the client builds kept, by build id
 //!   aac-sandbox-launcher pack export <file> [--build ID]   one build as a file for a friend
@@ -21,7 +22,7 @@
 
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{addons, install, pak, update, vault};
+use crate::{addons, install, pak, settings, update, vault};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -190,6 +191,14 @@ fn go(args: &[String]) -> Result<(), String> {
                 _ => return Err(arg(99).unwrap_err()),
             }
         }
+        "settings" => {
+            if args.get(1).map(String::as_str) != Some("copy") {
+                return Err("settings copy [--from FILE]: takes your display and sound settings from AA Classic's system.cfg".into());
+            }
+            let from = opt(args, "--from").map(PathBuf::from).or_else(settings::real_file).ok_or("no AA Classic settings file was found: pass --from <system.cfg>")?;
+            let n = settings::copy_from(&paths, &from)?;
+            println!("{n} display and sound settings copied from {} (that file was only read)", from.display());
+        }
         "addons" => {
             let server = server()?;
             match addons::ensure(&paths, &server)? {
@@ -320,7 +329,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 println!("sandbox user folder removed");
             }
         }
-        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | update [--check] | addons | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
+        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | update [--check] | settings copy | addons | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
     }
     Ok(())
 }

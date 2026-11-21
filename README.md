@@ -26,6 +26,7 @@ aac-sandbox-launcher setup [--aac C:\Games\AAClassic] [--mode standard|full]
 aac-sandbox-launcher play --user NAME (--password P | --token HEX64) [--server ADDRESS-OR-LINK] [--login-port N] [--wait]
 aac-sandbox-launcher info [--server LINK]
 aac-sandbox-launcher signup --user NAME --password P [--invite CODE] [--server LINK]
+aac-sandbox-launcher settings copy [--from FILE]
 aac-sandbox-launcher addons [--server LINK]
 aac-sandbox-launcher update [--check]
 aac-sandbox-launcher vault
@@ -37,6 +38,10 @@ aac-sandbox-launcher remove [--profile]
 ```
 
 When AA Classic updates, `status` says the copy is outdated. Run `setup` again.
+
+## Your AA Classic graphics settings
+
+Only when asked ("Copy my graphics settings" in Settings, or `settings copy`): the launcher reads the real `Documents\AAClassic\system.cfg` and takes the display, quality and sound settings into the sandbox client's own `system.cfg`. That file is only read. A server address, language or anything about an account is never taken. Keybinds, in-game options and action bars are stored on AA Classic's server and cannot be copied this way.
 
 ## The server's addons
 

@@ -8,6 +8,7 @@ mod gui;
 mod install;
 mod net;
 mod pak;
+mod settings;
 mod update;
 mod vault;
 
