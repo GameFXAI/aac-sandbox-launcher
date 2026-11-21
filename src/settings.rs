@@ -82,19 +82,28 @@ fn with_language(ours: &str, lang: &str) -> String {
     out.join("\r\n") + "\r\n"
 }
 
-/// Makes our client's own settings file name the language. Without that line the client shows its interface in
-/// Korean, whatever `--lang` says on the command line. Written only when it is not there yet.
+/// What our client's own settings file must hold before a start:
+/// - the language: without that line the client shows its interface in Korean, whatever `--lang` says;
+/// - `login_first_movie = 1` when the file says nothing about it: otherwise the client plays its intro movie for
+///   about 150 seconds before it logs in, and a launch ticket is long dead by then. A value already there stays.
+/// The file is written only when something changes.
 pub fn set_language(paths: &Paths, lang: &str) -> Result<(), String> {
     if lang.is_empty() || lang.len() > 16 || !lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err("the language is a short name such as en_us".into());
     }
     let file = paths.docs().join("system.cfg");
     let current = fs::read(&file).map(|b| String::from_utf8_lossy(&b).to_string()).unwrap_or_default();
-    if current.lines().filter_map(parse).any(|(name, value)| name == "locale" && value.trim_matches('"') == lang) {
+    let has = |n: &str| current.lines().filter_map(parse).any(|(name, _)| name == n);
+    let movie = has("login_first_movie");
+    if movie && current.lines().filter_map(parse).any(|(name, value)| name == "locale" && value.trim_matches('"') == lang) {
         return Ok(());
     }
+    let mut text = with_language(&current, lang);
+    if !movie {
+        text.push_str("login_first_movie = 1\r\n");
+    }
     fs::create_dir_all(paths.docs()).map_err(|e| e.to_string())?;
-    fs::write(&file, with_language(&current, lang)).map_err(|e| format!("cannot write the settings: {e}"))
+    fs::write(&file, text).map_err(|e| format!("cannot write the settings: {e}"))
 }
 
 /// The player's real settings file, if there is one.
@@ -167,16 +176,17 @@ mod tests {
         let paths = Paths::at(d.join("ours"));
         let file = paths.docs().join("system.cfg");
         set_language(&paths, "en_us").unwrap();
-        assert_eq!(fs::read_to_string(&file).unwrap(), "locale = en_us\r\n");
-        fs::write(&file, "r_width = 800\r\nlocale = \"ko\"\r\nlocale = de\r\nmy_own = 1\r\n").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "locale = en_us\r\nlogin_first_movie = 1\r\n");
+        // the player's own choice about the movie stays
+        fs::write(&file, "r_width = 800\r\nlocale = \"ko\"\r\nlocale = de\r\nlogin_first_movie = 0\r\nmy_own = 1\r\n").unwrap();
         set_language(&paths, "en_us").unwrap();
-        assert_eq!(fs::read_to_string(&file).unwrap(), "r_width = 800\r\nlocale = en_us\r\nmy_own = 1\r\n");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "r_width = 800\r\nlocale = en_us\r\nlogin_first_movie = 0\r\nmy_own = 1\r\n");
         let before = fs::metadata(&file).unwrap().modified().unwrap();
         set_language(&paths, "en_us").unwrap();
         assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), before);
         // copying the player's display settings keeps it
         let (text, _) = merge(&fs::read_to_string(&file).unwrap(), "r_width = 1920\nlocale = fr\n");
-        assert_eq!(text, "r_width = 1920\r\nlocale = en_us\r\nmy_own = 1\r\n");
+        assert_eq!(text, "r_width = 1920\r\nlocale = en_us\r\nlogin_first_movie = 0\r\nmy_own = 1\r\n");
         assert!(set_language(&paths, "en us; x").is_err());
     }
 
