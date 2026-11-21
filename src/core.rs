@@ -94,6 +94,14 @@ pub struct Config {
     pub lang: String,
     /// The login server's port when it is not the usual 1237 (0 = the usual one).
     pub login_port: u16,
+    /// Where the launcher's signed update manifest is; empty = the address built into the launcher, if any.
+    pub manifest_url: String,
+}
+
+impl Config {
+    pub fn update_manifest(&self) -> &str {
+        if self.manifest_url.trim().is_empty() { crate::update::MANIFEST_URL } else { self.manifest_url.trim() }
+    }
 }
 
 impl Default for Config {
@@ -106,6 +114,7 @@ impl Default for Config {
             username: String::new(),
             lang: "en_us".into(),
             login_port: 0,
+            manifest_url: String::new(),
         }
     }
 }

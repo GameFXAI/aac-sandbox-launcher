@@ -4,7 +4,7 @@
 use crate::cli::default_aac_dir;
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{addons, install, vault};
+use crate::{addons, install, update, vault};
 use eframe::egui::{
     self, Align, Align2, Color32, FontData, FontFamily, FontId, Layout, Margin, Painter, Pos2, Rect, RichText, Sense,
     Shape, Stroke, TextEdit, UiBuilder, Vec2, ViewportCommand, pos2, vec2,
@@ -401,6 +401,10 @@ enum Msg {
     Installed(Result<(u32, String), String>),
     /// a build pack was imported or exported
     Pack(Result<String, String>),
+    /// a newer launcher is on offer
+    Update(update::Release),
+    /// the new launcher is in place: start it
+    Updated(Result<std::path::PathBuf, String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -417,6 +421,7 @@ enum Action {
     Stop,
     ImportPack,
     ExportPack,
+    UpdateLauncher,
     Play,
     SignUp,
     ChooseFolder,
@@ -441,6 +446,8 @@ struct App {
     /// set to stop a running Install game
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     installing: bool,
+    /// a newer launcher the manifest offers
+    update: Option<update::Release>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     child: Option<(Child, SystemTime)>,
@@ -475,6 +482,7 @@ impl App {
             progress: None,
             cancel: Default::default(),
             installing: false,
+            update: None,
             tx,
             rx,
             child: None,
@@ -488,6 +496,15 @@ impl App {
             confirm: None,
         };
         a.refresh();
+        // ask the signed manifest for a newer launcher, off the window's thread; silent when there is none
+        let (url, tx) = (a.cfg.update_manifest().to_string(), a.tx.clone());
+        if !url.is_empty() {
+            std::thread::spawn(move || {
+                if let Ok(Some(r)) = update::check(&url) {
+                    let _ = tx.send(Msg::Update(r));
+                }
+            });
+        }
         a
     }
 
@@ -685,6 +702,16 @@ impl App {
                 self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
                 self.say("stopping after the part that is being downloaded...");
             }
+            Action::UpdateLauncher => {
+                if let Some(r) = self.update.clone() {
+                    self.busy = true;
+                    self.say(format!("downloading launcher {} ...", r.version));
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Msg::Updated(update::apply(&r)));
+                    });
+                }
+            }
             Action::ImportPack => self.import_pack(),
             Action::ExportPack => self.export_pack(),
             Action::Play => self.start_play(),
@@ -758,6 +785,23 @@ impl App {
                             self.say(format!("account {name} created: press Play"));
                         }
                         Err(e) => self.say(format!("sign-up failed: {e}")),
+                    }
+                }
+                Msg::Update(r) => {
+                    self.say(format!("launcher {} is available (this is {})", r.version, update::VERSION));
+                    self.update = Some(r);
+                }
+                Msg::Updated(r) => {
+                    self.busy = false;
+                    match r {
+                        Ok(exe) => {
+                            // the new launcher takes over
+                            self.say("launcher updated: restarting");
+                            if std::process::Command::new(&exe).spawn().is_ok() {
+                                ctx.send_viewport_cmd(ViewportCommand::Close);
+                            }
+                        }
+                        Err(e) => self.say(format!("launcher update: {e}")),
                     }
                 }
                 Msg::Progress(f) => self.progress = Some(f),
@@ -842,6 +886,13 @@ impl App {
                 }
                 if win_button(ui, WinBtn::Minimize).clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+                }
+                if let Some(r) = &self.update {
+                    ui.add_space(10.0);
+                    let free = !self.busy && self.child.is_none();
+                    if ui.add_enabled(free, egui::Button::new(RichText::new(format!("Update launcher to {}", r.version)).color(GOLD))).clicked() {
+                        *act = Some(Action::UpdateLauncher);
+                    }
                 }
             });
         });

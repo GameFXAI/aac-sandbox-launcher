@@ -9,6 +9,8 @@
 //! --server is a bare address (a development server: the client gets the password hash) or a link to a server's
 //! account API (https://..., or http:// on this PC): then --password is checked there and the client gets a ticket.
 //!   aac-sandbox-launcher remove [--profile]
+//!   aac-sandbox-launcher update [--check]              a newer launcher from the signed manifest
+//!   aac-sandbox-launcher manifest keygen|make|sign     for the owner: sign a release (see update.rs)
 //!   aac-sandbox-launcher addons [--server <link>]     install the addons the server names (play does this too)
 //!   aac-sandbox-launcher vault                        the client builds kept, by build id
 //!   aac-sandbox-launcher pack export <file> [--build ID]   one build as a file for a friend
@@ -19,7 +21,7 @@
 
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{addons, install, pak, vault};
+use crate::{addons, install, pak, update, vault};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -142,6 +144,51 @@ fn go(args: &[String]) -> Result<(), String> {
             cfg.username = name.clone();
             let _ = cfg.save(&paths);
             println!("account {name} created");
+        }
+        "update" => {
+            println!("this launcher is version {}", update::VERSION);
+            if cfg.update_manifest().is_empty() {
+                println!("self-update is off: no manifest address is set");
+                return Ok(());
+            }
+            match update::check(cfg.update_manifest())? {
+                None => println!("up to date"),
+                Some(r) if flag(args, "--check") => println!("version {} is available", r.version),
+                Some(r) => {
+                    let exe = update::apply(&r)?;
+                    log_line(&paths, &format!("launcher updated to {}", r.version));
+                    println!("updated to version {}: {}", r.version, exe.display());
+                }
+            }
+        }
+        // for the owner: the key pair and the signed manifest of a release
+        "manifest" => {
+            let arg = |i: usize| args.get(i).cloned().ok_or("manifest keygen KEYFILE | manifest make EXE VERSION URL OUT | manifest sign MANIFEST KEYFILE".to_string());
+            match args.get(1).map(String::as_str) {
+                Some("keygen") => {
+                    let file = PathBuf::from(arg(2)?);
+                    if file.exists() {
+                        return Err(format!("{} is there already: a new key would lock out every launcher built with the old one", file.display()));
+                    }
+                    let (private, public) = update::keygen()?;
+                    std::fs::write(&file, private).map_err(|e| e.to_string())?;
+                    println!("private key written to {} (keep it out of every repository)", file.display());
+                    println!("public key, for UPDATE_KEY in src/update.rs: {public}");
+                }
+                Some("make") => {
+                    let text = update::manifest_for(&PathBuf::from(arg(2)?), &arg(3)?, &arg(4)?)?;
+                    std::fs::write(arg(5)?, &text).map_err(|e| e.to_string())?;
+                    println!("{text}");
+                }
+                Some("sign") => {
+                    let manifest = std::fs::read(arg(2)?).map_err(|e| e.to_string())?;
+                    let key = std::fs::read_to_string(arg(3)?).map_err(|e| e.to_string())?;
+                    let out = format!("{}.sig", arg(2)?);
+                    std::fs::write(&out, update::sign(&manifest, &key)?).map_err(|e| e.to_string())?;
+                    println!("signature written to {out}");
+                }
+                _ => return Err(arg(99).unwrap_err()),
+            }
         }
         "addons" => {
             let server = server()?;
@@ -273,7 +320,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 println!("sandbox user folder removed");
             }
         }
-        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | addons | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
+        _ => return Err("commands: status | setup [--aac DIR] [--mode standard|full] | play --user U (--password P | --token HEX) [--server IP-or-LINK] [--login-port N] [--wait] | info | signup --user U --password P [--invite CODE] | remove [--profile] | update [--check] | addons | vault | pack export FILE | pack import FILE | install [--to V] [--build ID] [--offline] | pak info|list|check FILE".into()),
     }
     Ok(())
 }

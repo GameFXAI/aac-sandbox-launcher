@@ -27,6 +27,7 @@ aac-sandbox-launcher play --user NAME (--password P | --token HEX64) [--server A
 aac-sandbox-launcher info [--server LINK]
 aac-sandbox-launcher signup --user NAME --password P [--invite CODE] [--server LINK]
 aac-sandbox-launcher addons [--server LINK]
+aac-sandbox-launcher update [--check]
 aac-sandbox-launcher vault
 aac-sandbox-launcher pack export FILE [--build ID]
 aac-sandbox-launcher pack import FILE [--server LINK]
@@ -64,6 +65,23 @@ The game data file is only ever changed when no other name on disk points at it,
 
 Checked 2026-11-21 against real files: the 34 patch files 264-297 merged by this code give 6,995 files, each with the size and MD5 that AA Classic's own build-297 `game_pak` lists, and every file's bytes match its MD5. Not yet run: a whole install from an empty disk (no room on the development PC), and a game start on a copy made this way.
 
+## Updating the launcher itself
+
+The launcher can replace itself with a newer version named in a signed manifest (update.rs). The manifest is a small JSON file on any static file host, with its ed25519 signature next to it (`<manifest>.sig`); the public key is built into the exe, so only the holder of the private key can offer an update. Only a higher version is taken, the new exe is checked by size and SHA-256, downloads are HTTPS only.
+
+It is off until a manifest address exists: `MANIFEST_URL` in `src/update.rs`, or `manifest_url` in `launcher.json`. The window then shows "Update launcher to X" in the top bar; `update` does it from the command line.
+
+Publishing a release (the owner):
+
+```
+aac-sandbox-launcher manifest make <new exe> 0.2.0 https://<host>/aac-sandbox-launcher.exe manifest.json
+aac-sandbox-launcher manifest sign manifest.json <private key file>
+```
+
+then upload the exe, `manifest.json` and `manifest.json.sig`. The private key was made with `manifest keygen` and is kept outside every repository; whoever has it can update every launcher, and a lost key means a new launcher has to be handed out by hand.
+
+Checked 2026-11-21 with a file server on this PC: a 0.1.0 exe found, downloaded and swapped in a 0.2.0; a manifest changed after signing was refused. Not set up: a real host for the files.
+
 ## Build
 
 ```
@@ -75,5 +93,5 @@ cargo test
 
 - Addon packs and settings copy.
 - Crash reports sent to our own receiver.
-- Installer and updates.
+- The Inno Setup installer; a host for the update manifest.
 - Importing an action-bar layout from an existing profile.
