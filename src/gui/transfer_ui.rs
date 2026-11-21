@@ -45,7 +45,7 @@ impl Xfer {
 
 /// A square check box drawn in the launcher's gold.
 fn check_box(p: &Painter, r: Rect, on: bool, enabled: bool, hover: bool) {
-    let edge = if !enabled { rgba(90, 96, 108, 160) } else if on || hover { GOLD } else { rgba(150, 140, 110, 200) };
+    let edge = if !enabled { rgba(90, 96, 108, 160) } else if on || hover { GOLD } else { rgba(110, 150, 150, 200) };
     let fill = if on && enabled { GOLD } else { rgba(10, 13, 19, 220) };
     p.rect(r, 3.0, fill, Stroke::new(1.3, edge), egui::StrokeKind::Inside);
     if on && enabled {
@@ -326,8 +326,8 @@ impl App {
         let p = ui.painter().clone();
 
         // header
-        p.text(inner.left_top(), Align2::LEFT_TOP, "Transfer from AA Classic", title_font(26.0), INK);
-        p.text(inner.left_top() + vec2(0.0, 34.0), Align2::LEFT_TOP, "Bring your settings, keybinds, bars and build over. AA Classic's own files are only read, never changed.", FontId::proportional(13.0), MUTED);
+        p.text(inner.left_top(), Align2::LEFT_TOP, "Bring your setup from AA Classic", title_font(26.0), INK);
+        p.text(inner.left_top() + vec2(0.0, 34.0), Align2::LEFT_TOP, "Tick what should come over and press Transfer. AA Classic's own files are only read, and Undo puts everything back.", FontId::proportional(13.0), MUTED);
 
         let top = inner.top() + 62.0;
         let left_w = 548.0;
@@ -354,12 +354,26 @@ impl App {
                 });
                 return;
             }
-            caption(ui, "Into this client");
+            caption(ui, "On this PC");
+            let no_recording = self.xfer.scan.as_ref().is_some_and(|s| s.recording.is_none());
+            let mut folded = false;
             for (i, it) in items.iter().enumerate() {
                 if i == 3 {
                     ui.add_space(8.0);
                     let who = if self.cfg.username.trim().is_empty() { String::new() } else { format!(" {}", self.cfg.username.trim()) };
-                    caption(ui, &format!("Onto your account{who} on {host}"));
+                    caption(ui, &format!("On your account{who}"));
+                    let _ = &host;
+                }
+                if no_recording && !it.ready && matches!(it.id, "keybinds" | "options" | "bars") {
+                    if !folded {
+                        folded = true;
+                        egui::Frame::new().inner_margin(Margin { left: 14, right: 8, top: 2, bottom: 2 }).show(ui, |ui| {
+                            ui.set_max_width(left_w - 30.0);
+                            ui.add(egui::Label::new(RichText::new("Keybinds, game options and action bars come from a recording of an AA Classic session. Have one? Choose it on the right.").size(12.5).color(MUTED)).wrap());
+                        });
+                        ui.add_space(6.0);
+                    }
+                    continue;
                 }
                 let enabled = it.ready && (!it.server || server.is_ok()) && !locked;
                 let on = self.xfer.ticks.contains(&it.id) && it.ready && (!it.server || server.is_ok());
@@ -368,7 +382,7 @@ impl App {
                     match it.id {
                         "keybinds" | "options" | "bars" if self.xfer.scan.as_ref().is_some_and(|s| s.recording.is_none()) => ("NEEDS RECORDING", grey),
                         "gear" => ("PASTE LINK", grey),
-                        "layout" if self.xfer.scan.as_ref().is_some_and(|s| s.source().is_some()) => ("PLAY FIRST", grey),
+                        "layout" if self.xfer.scan.as_ref().is_some_and(|s| s.source().is_some()) => ("PLAY ONCE FIRST", grey),
                         _ => ("NOT FOUND", grey),
                     }
                 } else if it.server && server.is_err() {
@@ -448,7 +462,7 @@ impl App {
                 ui.label(RichText::new("Asking DaruGear…").size(12.0).color(MUTED));
             }
 
-            caption(ui, "Recording of an AA Classic session");
+            caption(ui, "AA Classic recording (optional)");
             ui.horizontal(|ui| {
                 let name = self.xfer.recording.as_ref().and_then(|f| f.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "none found".into());
                 let shown = elide(ui.painter(), &name, FontId::monospace(12.0), right.width() - 120.0);
@@ -528,7 +542,7 @@ pub(super) fn transfer_button(ui: &mut egui::Ui, width: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 54.0), Sense::click());
     let p = ui.painter();
     let hov = resp.hovered();
-    grad_shape(p, rect, 8.0, if hov { rgba(60, 50, 26, 235) } else { rgba(36, 32, 22, 225) }, rgba(16, 15, 12, 235), Stroke::new(1.2, if hov { GOLD } else { gold_a(150) }));
+    grad_shape(p, rect, 8.0, if hov { rgba(22, 60, 62, 235) } else { rgba(16, 38, 42, 225) }, rgba(10, 16, 20, 235), Stroke::new(1.2, if hov { GOLD } else { gold_a(150) }));
     // two arrows: from AA Classic into this client
     let c = pos2(rect.left() + 30.0, rect.center().y);
     let s = Stroke::new(1.8, GOLD);
@@ -538,7 +552,7 @@ pub(super) fn transfer_button(ui: &mut egui::Ui, width: f32) -> egui::Response {
     p.line_segment([c + vec2(9.0, 5.0), c + vec2(-8.0, 5.0)], Stroke::new(1.8, gold_a(140)));
     p.line_segment([c + vec2(-4.0, 1.0), c + vec2(-8.0, 5.0)], Stroke::new(1.8, gold_a(140)));
     p.line_segment([c + vec2(-4.0, 9.0), c + vec2(-8.0, 5.0)], Stroke::new(1.8, gold_a(140)));
-    p.text(pos2(rect.left() + 54.0, rect.top() + 9.0), Align2::LEFT_TOP, "Transfer from AA Classic", bold_font(16.0), if hov { Color32::from_rgb(252, 230, 170) } else { INK });
+    p.text(pos2(rect.left() + 54.0, rect.top() + 9.0), Align2::LEFT_TOP, "Bring your setup from AA Classic", bold_font(16.0), if hov { Color32::from_rgb(190, 255, 244) } else { INK });
     p.text(pos2(rect.left() + 54.0, rect.top() + 30.0), Align2::LEFT_TOP, "Settings, keybinds, interface, bars and your gear, in one go", FontId::proportional(12.5), MUTED);
     p.text(pos2(rect.right() - 18.0, rect.center().y), Align2::RIGHT_CENTER, "›", title_font(26.0), if hov { GOLD } else { gold_a(150) });
     resp

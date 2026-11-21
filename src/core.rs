@@ -460,7 +460,10 @@ pub fn client_env(paths: &Paths) -> (Vec<(String, String)>, Vec<String>) {
 pub fn play(paths: &Paths, aac: Option<&AacInstall>, mode: Mode, l: &Launch) -> Result<Child, String> {
     let running = blocking_processes();
     if !running.is_empty() {
-        return Err(format!("close these first: {}", running.join(", ")));
+        return Err(format!(
+            "Close AA Classic first (its game or launcher is still open: {}). Both can't run at once.",
+            running.join(", ")
+        ));
     }
     let st = status(paths, aac, mode);
     if st != State::Ready {

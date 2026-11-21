@@ -21,10 +21,14 @@ use transfer_ui::{XMsg, Xfer};
 // Look
 // ---------------------------------------------------------------------------------------------------------------
 
-const GOLD: Color32 = Color32::from_rgb(214, 177, 94);
+/// The accent: AA REPLAY teal (the name stays from the first look). VIOLET is the second brand colour.
+const GOLD: Color32 = Color32::from_rgb(72, 212, 194);
+const VIOLET: Color32 = Color32::from_rgb(150, 112, 240);
+/// Warnings (the AA Classic password line).
+const AMBER: Color32 = Color32::from_rgb(236, 186, 92);
 const INK: Color32 = Color32::from_rgb(234, 228, 214);
 const MUTED: Color32 = Color32::from_rgb(146, 156, 170);
-const DARK_TEXT: Color32 = Color32::from_rgb(34, 24, 8);
+const DARK_TEXT: Color32 = Color32::from_rgb(6, 30, 34);
 const GREEN: Color32 = Color32::from_rgb(118, 204, 140);
 const RED: Color32 = Color32::from_rgb(232, 112, 100);
 const BLUE: Color32 = Color32::from_rgb(110, 170, 240);
@@ -34,7 +38,7 @@ fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
 }
 
 fn gold_a(a: u8) -> Color32 {
-    rgba(214, 177, 94, a)
+    rgba(72, 212, 194, a)
 }
 
 fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -85,7 +89,7 @@ fn install_style(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
     v.override_text_color = Some(INK);
     v.extreme_bg_color = Color32::from_rgb(12, 16, 23);
-    v.selection.bg_fill = Color32::from_rgb(112, 88, 40);
+    v.selection.bg_fill = Color32::from_rgb(28, 92, 90);
     v.selection.stroke = Stroke::new(1.0, GOLD);
     for (w, fill, stroke) in [
         (&mut v.widgets.inactive, Color32::from_rgb(26, 32, 43), Color32::from_rgb(54, 62, 78)),
@@ -211,7 +215,7 @@ fn backdrop(p: &Painter, r: Rect) {
     // moon with a warm glow
     let moon = pos2(r.left() + r.width() * 0.52, r.top() + r.height() * 0.19);
     for i in (0..16).rev() {
-        p.circle_filled(moon, 36.0 + i as f32 * 16.0, rgba(240, 200, 130, 3 + (15 - i) as u8 / 2));
+        p.circle_filled(moon, 36.0 + i as f32 * 16.0, rgba(140, 200, 240, 3 + (15 - i) as u8 / 2));
     }
     p.circle_filled(moon, 38.0, Color32::from_rgb(246, 236, 210));
     p.circle_filled(moon + vec2(-10.0, -6.0), 7.0, rgba(214, 200, 170, 90));
@@ -315,14 +319,14 @@ fn big_button(ui: &mut egui::Ui, size: Vec2, label: &str, enabled: bool) -> egui
     let (top, bottom, edge, text) = if !enabled {
         (Color32::from_rgb(64, 62, 58), Color32::from_rgb(42, 41, 38), Color32::from_rgb(80, 76, 68), MUTED)
     } else if hov {
-        (Color32::from_rgb(252, 226, 156), Color32::from_rgb(208, 162, 72), Color32::from_rgb(255, 236, 180), DARK_TEXT)
+        (Color32::from_rgb(150, 246, 230), Color32::from_rgb(56, 178, 176), Color32::from_rgb(190, 255, 244), DARK_TEXT)
     } else {
-        (Color32::from_rgb(240, 208, 132), Color32::from_rgb(184, 140, 58), Color32::from_rgb(250, 222, 150), DARK_TEXT)
+        (Color32::from_rgb(118, 234, 216), Color32::from_rgb(40, 156, 160), Color32::from_rgb(160, 246, 232), DARK_TEXT)
     };
     let r = if enabled && resp.is_pointer_button_down_on() { rect.shrink(1.0) } else { rect };
     grad_shape(p, r, 10.0, top, bottom, Stroke::new(1.0, edge));
     let inner = r.shrink(4.0);
-    p.add(Shape::closed_line(chamfer(inner, 7.0), Stroke::new(1.0, rgba(255, 245, 210, if enabled { 70 } else { 20 }))));
+    p.add(Shape::closed_line(chamfer(inner, 7.0), Stroke::new(1.0, rgba(220, 255, 250, if enabled { 70 } else { 20 }))));
     p.text(r.center(), Align2::CENTER_CENTER, label, title_font(24.0), text);
     resp
 }
@@ -374,7 +378,7 @@ fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, title
     } else {
         Stroke::new(1.0, Color32::from_rgb(52, 60, 76))
     };
-    let (t, b) = if selected { (rgba(52, 44, 24, 230), rgba(24, 22, 16, 235)) } else { (rgba(24, 30, 40, 220), rgba(14, 18, 25, 230)) };
+    let (t, b) = if selected { (rgba(18, 52, 54, 230), rgba(12, 24, 28, 235)) } else { (rgba(24, 30, 40, 220), rgba(14, 18, 25, 230)) };
     grad_shape(p, rect, 8.0, t, b, edge);
     // radio dot
     let dot = rect.left_top() + vec2(22.0, 26.0);
@@ -410,6 +414,8 @@ enum Msg {
     Updated(Result<std::path::PathBuf, String>),
     /// the transfer screen's workers
     Xfer(XMsg),
+    /// the server's /api/info answer
+    ServerUp(Result<String, String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -465,6 +471,12 @@ struct App {
     tab: Tab,
     confirm: Option<(Action, SystemTime)>,
     xfer: Xfer,
+    /// what went wrong with the last thing the player pressed: shown in the bottom bar until the next press
+    hint: Option<String>,
+    /// the server's answer to /api/info: Ok(name) when it is up
+    server_up: Option<Result<String, String>>,
+    /// the sign-in card shows the server address field
+    edit_server: bool,
 }
 
 impl App {
@@ -481,12 +493,14 @@ impl App {
             }
         }
         let (tx, rx) = channel();
+        let first_start = cfg.username.trim().is_empty();
         let mut a = App {
             paths,
             cfg,
             password: String::new(),
             invite: String::new(),
-            signup: std::env::var("AAEMU_SANDBOX_SIGNUP").is_ok(), // for screenshots
+            // a first start (no account remembered) opens on Create account: a friend arrives with an invite code
+            signup: std::env::var("AAEMU_SANDBOX_SIGNUP").is_ok() || first_start,
             asking: false,
             log: vec![],
             busy: false,
@@ -506,7 +520,11 @@ impl App {
             },
             confirm: None,
             xfer: Xfer::default(),
+            hint: None,
+            server_up: None,
+            edit_server: false,
         };
+        a.check_server();
         a.refresh();
         if std::env::var("AAEMU_SANDBOX_TAB").as_deref() == Ok("transfer") {
             a.open_transfer();
@@ -590,6 +608,31 @@ impl App {
         });
     }
 
+    /// Asks the server whether it is up, off the window's thread.
+    fn check_server(&mut self) {
+        self.server_up = None;
+        let tx = self.tx.clone();
+        let server = Server::parse(&self.cfg.login_ip);
+        std::thread::spawn(move || {
+            let r = match server {
+                Ok(s @ Server::Api { .. }) => net::info(&s).map(|i| {
+                    // the default AAEmu name says nothing to a player
+                    if i.name.trim().is_empty() || i.name.starts_with("AAEmu") { "The arena server".to_string() } else { i.name }
+                }),
+                Ok(_) => Ok("Your own server".to_string()),
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(Msg::ServerUp(r));
+        });
+    }
+
+    /// A problem with what the player just pressed: logged, and shown in the bottom bar.
+    fn warn(&mut self, s: impl Into<String>) {
+        let s = s.into();
+        self.hint = Some(s.clone());
+        self.say(s);
+    }
+
     fn say(&mut self, s: impl Into<String>) {
         let s = s.into();
         log_line(&self.paths, &s);
@@ -617,21 +660,21 @@ impl App {
     fn start_play(&mut self) {
         let aac = match self.aac_if_needed() {
             Ok(a) => a,
-            Err(e) => return self.say(e),
+            Err(e) => return self.warn(e),
         };
         if self.cfg.username.trim().is_empty() || self.password.is_empty() {
-            return self.say("enter your account and password for this server");
+            return self.warn("Enter your account name and password on the right.");
         }
         let server = match Server::parse(&self.cfg.login_ip) {
             Ok(s) => s,
-            Err(e) => return self.say(e),
+            Err(e) => return self.warn(e),
         };
         let _ = self.cfg.save(&self.paths);
         let username = self.cfg.username.trim().to_string();
         if let Server::Api { .. } = server {
             // the password is checked by the server's account API; the client only ever gets a one-time ticket
             self.asking = true;
-            self.say("signing in...");
+            self.say("Signing in…");
             let (tx, password, paths) = (self.tx.clone(), self.password.clone(), self.paths.clone());
             std::thread::spawn(move || {
                 // the server's addons first: a ticket is only good for two minutes
@@ -656,13 +699,16 @@ impl App {
     fn start_signup(&mut self) {
         let server = match Server::parse(&self.cfg.login_ip) {
             Ok(s) => s,
-            Err(e) => return self.say(e),
+            Err(e) => return self.warn(e),
         };
         if self.cfg.username.trim().is_empty() || self.password.is_empty() {
-            return self.say("choose an account name and a password");
+            return self.warn("Choose an account name and a password.");
+        }
+        if self.invite.trim().is_empty() {
+            return self.warn("Enter the invite code you were given.");
         }
         self.asking = true;
-        self.say("creating the account...");
+        self.say("Creating your account…");
         let (tx, username, password, invite) = (self.tx.clone(), self.cfg.username.trim().to_string(), self.password.clone(), self.invite.clone());
         std::thread::spawn(move || {
             let _ = tx.send(Msg::SignedUp(net::signup(&server, &username, &password, &invite)));
@@ -680,7 +726,7 @@ impl App {
                 self.say(format!("client started (pid {})", c.id()));
                 self.child = Some((c, SystemTime::now()));
             }
-            Err(e) => self.say(e),
+            Err(e) => self.warn(e),
         }
     }
 
@@ -710,6 +756,7 @@ impl App {
     }
 
     fn run(&mut self, a: Action) {
+        self.hint = None;
         match a {
             Action::Setup => self.start_setup(),
             Action::Install => self.start_install(),
@@ -796,7 +843,7 @@ impl App {
                             let _ = self.cfg.save(&self.paths);
                             self.launch(aac, name, ticket);
                         }
-                        (Err(e), _) | (_, Err(e)) => self.say(format!("sign-in failed: {e}")),
+                        (Err(e), _) | (_, Err(e)) => self.warn(format!("Sign-in failed: {e}")),
                     }
                 }
                 Msg::SignedUp(r) => {
@@ -807,9 +854,9 @@ impl App {
                             let _ = self.cfg.save(&self.paths);
                             self.signup = false;
                             self.invite.clear();
-                            self.say(format!("account {name} created: press Play"));
+                            self.say(format!("Account {name} created: press Play"));
                         }
-                        Err(e) => self.say(format!("sign-up failed: {e}")),
+                        Err(e) => self.warn(format!("Could not create the account: {e}")),
                     }
                 }
                 Msg::Update(r) => {
@@ -831,6 +878,7 @@ impl App {
                 }
                 Msg::Progress(f) => self.progress = Some(f),
                 Msg::Xfer(m) => self.transfer_msg(m),
+                Msg::ServerUp(r) => self.server_up = Some(r),
                 Msg::Installed(r) => {
                     self.busy = false;
                     self.installing = false;
@@ -841,7 +889,7 @@ impl App {
                             let _ = self.cfg.save(&self.paths);
                             self.say(format!("installed: game data version {version}, client build {}", &build[..12.min(build.len())]));
                         }
-                        Err(e) => self.say(format!("install: {e}")),
+                        Err(e) => self.warn(format!("Install stopped: {e}")),
                     }
                     self.refresh();
                 }
@@ -857,8 +905,17 @@ impl App {
                     self.busy = false;
                     self.progress = None;
                     match r {
-                        Ok(()) => self.say("set up: ready to play"),
-                        Err(e) => self.say(format!("set up failed: {e}")),
+                        Ok(()) => {
+                            self.say("Your copy of the game is ready");
+                            // one press: with an account filled in, Install goes on to Play
+                            if !self.signup && !self.cfg.username.trim().is_empty() && !self.password.is_empty() {
+                                self.refresh();
+                                if matches!(self.state, Ok(State::Ready)) {
+                                    self.start_play();
+                                }
+                            }
+                        }
+                        Err(e) => self.warn(format!("Install failed: {e}")),
                     }
                     self.refresh();
                 }
@@ -894,15 +951,15 @@ impl App {
         let e = pos2(rect.left() + 34.0, rect.center().y);
         let dia = |r: f32| vec![e + vec2(0.0, -r), e + vec2(r, 0.0), e + vec2(0.0, r), e + vec2(-r, 0.0)];
         p.add(Shape::convex_polygon(dia(14.0), gold_a(30), Stroke::new(1.5, GOLD)));
-        p.add(Shape::convex_polygon(dia(6.0), GOLD, Stroke::NONE));
-        let logo = p.text(pos2(rect.left() + 58.0, rect.center().y - 1.0), Align2::LEFT_CENTER, "AAEMU", title_font(22.0), GOLD);
-        let sb = p.text(pos2(logo.right() + 8.0, logo.bottom() - 5.0), Align2::LEFT_BOTTOM, "SANDBOX", bold_font(11.5), MUTED);
+        p.add(Shape::convex_polygon(dia(6.0), VIOLET, Stroke::NONE));
+        let aa = p.text(pos2(rect.left() + 58.0, rect.center().y - 1.0), Align2::LEFT_CENTER, "AA", title_font(22.0), INK);
+        let sb = p.text(pos2(aa.right() + 6.0, rect.center().y - 1.0), Align2::LEFT_CENTER, "REPLAY", title_font(22.0), GOLD);
 
         let tabs = Rect::from_min_max(pos2(sb.right() + 40.0, rect.top()), rect.max);
         ui.scope_builder(UiBuilder::new().max_rect(tabs).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (t, name) in [(Tab::Play, "Play"), (Tab::Transfer, "Transfer"), (Tab::Settings, "Settings"), (Tab::Log, "Log")] {
-                if nav_tab(ui, name, self.tab == t).clicked() {
+            for (t, name) in [(Tab::Play, "Play"), (Tab::Transfer, "Transfer"), (Tab::Settings, "Settings")] {
+                if nav_tab(ui, name, self.tab == t || (t == Tab::Settings && self.tab == Tab::Log)).clicked() {
                     if t == Tab::Transfer && self.tab != Tab::Transfer {
                         *act = Some(Action::OpenTransfer);
                     }
@@ -932,17 +989,20 @@ impl App {
         // left: the pitch
         let hero = Rect::from_min_size(body.min + vec2(56.0, 64.0), vec2(520.0, body.height() - 80.0));
         ui.scope_builder(UiBuilder::new().max_rect(hero).layout(Layout::top_down(Align::Min)), |ui| {
-            ui.label(RichText::new("PRIVATE TEST SERVER").font(bold_font(12.5)).color(GOLD).extra_letter_spacing(3.0));
+            ui.label(RichText::new("ARENA  ·  REPLAYS  ·  PRACTICE").font(bold_font(12.5)).color(GOLD).extra_letter_spacing(3.0));
             ui.add_space(2.0);
-            ui.label(RichText::new("AAEmu Sandbox").font(title_font(52.0)).color(INK));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;
+                ui.label(RichText::new("AA").font(title_font(56.0)).color(INK));
+                ui.label(RichText::new("Replay").font(title_font(56.0)).color(GOLD));
+            });
             ui.add_space(2.0);
-            ui.label(RichText::new("Play on your own AAEmu server with your own copy of the client, kept apart from AA Classic.").size(16.0).color(MUTED));
-            ui.add_space(28.0);
-            tick_row(ui, "Own copy of the client", "Your AA Classic folder is only read, never changed.");
-            tick_row(ui, "Own user folder", "Settings, addons and logs never mix with AA Classic's.");
-            tick_row(ui, "No reports sent", "Crash and performance uploads are switched off.");
-            tick_row(ui, "Separate account", "Your AA Classic login is never asked for.");
-            ui.add_space(10.0);
+            ui.label(RichText::new("Fight in the arena with your friends, then watch every fight back and get better.").size(16.0).color(MUTED));
+            ui.add_space(26.0);
+            tick_row(ui, "Any build, in seconds", "Wear a DaruGear build or a class setup. Dying costs nothing.");
+            tick_row(ui, "Every fight recorded", "Watch it back in the game: pause, slow it down, see every hit.");
+            tick_row(ui, "Kept apart from AA Classic", "Own copy, own folder, own account. AA Classic is never changed.");
+            ui.add_space(12.0);
             if transfer_ui::transfer_button(ui, 430.0).clicked() {
                 *act = Some(Action::OpenTransfer);
             }
@@ -950,15 +1010,46 @@ impl App {
 
         // right: sign in
         let w = 360.0;
-        let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 36.0), vec2(w, if self.signup { 484.0 } else { 424.0 }));
+        let tall = if self.signup { 470.0 } else { 404.0 } + if self.edit_server { 66.0 } else { 0.0 };
+        let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 36.0), vec2(w, tall));
         card(ui.painter(), cardr);
         let mut enter = false;
         ui.scope_builder(UiBuilder::new().max_rect(cardr.shrink2(vec2(28.0, 24.0))).layout(Layout::top_down(Align::Min)), |ui| {
             ui.label(RichText::new(if self.signup { "Create account" } else { "Sign in" }).font(title_font(26.0)).color(INK));
-            ui.label(RichText::new("Your account on this server, not your AA Classic account.").size(13.0).color(MUTED));
-            ui.add_space(14.0);
-            if field(ui, "Server", &mut self.cfg.login_ip, false, "https://... or 127.0.0.1").changed() {
-                self.cfg.game_ip = self.cfg.login_ip.clone();
+            ui.label(RichText::new(if self.signup { "Pick a name and a password, and enter the invite code you were given." } else { "Your AA Replay account, not your AA Classic one." }).size(13.0).color(MUTED));
+            ui.add_space(8.0);
+            // the server: a status line; the address only when someone asks to change it
+            ui.horizontal(|ui| {
+                let (dot, text) = match &self.server_up {
+                    None => (MUTED, "Checking the arena server…".to_string()),
+                    Some(Ok(name)) => (GREEN, format!("{name} is online")),
+                    Some(Err(_)) => (RED, "The arena server does not answer".to_string()),
+                };
+                let (r, _) = ui.allocate_exact_size(vec2(10.0, 18.0), Sense::hover());
+                ui.painter().circle_filled(r.center(), 4.0, dot);
+                let l = ui.label(RichText::new(text).size(13.0).color(INK));
+                if let Some(Err(e)) = &self.server_up {
+                    l.on_hover_text(e.as_str());
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let t = if self.edit_server { "done" } else { "change" };
+                    if ui.add(egui::Label::new(RichText::new(t).size(12.5).color(MUTED).underline()).sense(Sense::click())).on_hover_text("Play on another server").clicked() {
+                        self.edit_server = !self.edit_server;
+                        if !self.edit_server {
+                            self.check_server();
+                        }
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            if self.edit_server {
+                let r = field(ui, "Server", &mut self.cfg.login_ip, false, "https://... or 127.0.0.1");
+                if r.changed() {
+                    self.cfg.game_ip = self.cfg.login_ip.clone();
+                }
+                if r.lost_focus() {
+                    self.check_server();
+                }
             }
             field(ui, "Account", &mut self.cfg.username, false, "account name");
             let pw = field(ui, "Password", &mut self.password, true, "password for this server");
@@ -973,9 +1064,9 @@ impl App {
             }
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                ui.painter().circle_stroke(r.center(), 6.0, Stroke::new(1.2, GOLD));
-                ui.painter().text(r.center(), Align2::CENTER_CENTER, "!", bold_font(10.0), GOLD);
-                ui.label(RichText::new("Never type your AA Classic password here.").size(12.5).color(GOLD));
+                ui.painter().circle_stroke(r.center(), 6.0, Stroke::new(1.2, AMBER));
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, "!", bold_font(10.0), AMBER);
+                ui.label(RichText::new("Never type your AA Classic password here.").size(12.5).color(AMBER));
             });
             ui.add_space(4.0);
             // accounts are made on a server with an account API (a link), not on a bare address
@@ -1001,7 +1092,12 @@ impl App {
         let inner = cardr.shrink2(vec2(32.0, 26.0));
         let locked = self.busy || self.child.is_some();
         ui.scope_builder(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
-            ui.label(RichText::new("Settings").font(title_font(26.0)).color(INK));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Settings").font(title_font(26.0)).color(INK));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(format!("Launcher {}", update::VERSION)).size(12.0).color(MUTED));
+                });
+            });
             ui.add_space(8.0);
 
             ui.label(RichText::new("AA CLASSIC FOLDER").size(11.5).color(MUTED).extra_letter_spacing(1.2));
@@ -1058,18 +1154,24 @@ impl App {
             });
             ui.add_space(10.0);
 
-            ui.label(RichText::new("SANDBOX FOLDER").size(11.5).color(MUTED).extra_letter_spacing(1.2));
+            ui.label(RichText::new("THIS LAUNCHER").size(11.5).color(MUTED).extra_letter_spacing(1.2));
             ui.horizontal(|ui| {
-                ui.label(RichText::new(self.paths.root.display().to_string()).monospace().color(INK));
-                if ui.button("Open").clicked() {
+                if ui.button("Open its folder").on_hover_text(self.paths.root.display().to_string()).clicked() {
                     *act = Some(Action::OpenFolder);
                 }
+                if ui.button("Show log").clicked() {
+                    self.tab = Tab::Log;
+                }
+                if ui.button("Copy log").on_hover_text("Copies what the launcher did, to send to whoever helps you. It holds no password.").clicked() {
+                    ui.ctx().copy_text(self.log.join("
+"));
+                }
                 let l1 = if self.confirming(&Action::RemoveClient) { "Click again to remove" } else { "Remove client copy" };
-                if ui.add_enabled(!locked, egui::Button::new(RichText::new(l1).color(RED))).clicked() {
+                if ui.add_enabled(!locked, egui::Button::new(RichText::new(l1).color(RED))).on_hover_text("Deletes this launcher's copy of the game. AA Classic is not touched.").clicked() {
                     *act = Some(Action::RemoveClient);
                 }
-                let l2 = if self.confirming(&Action::RemoveAll) { "Click again to remove" } else { "Remove copy and profile" };
-                if ui.add_enabled(!locked, egui::Button::new(RichText::new(l2).color(RED))).clicked() {
+                let l2 = if self.confirming(&Action::RemoveAll) { "Click again to remove" } else { "Remove everything" };
+                if ui.add_enabled(!locked, egui::Button::new(RichText::new(l2).color(RED))).on_hover_text("Deletes the copy and this launcher's settings, addons and logs. AA Classic is not touched.").clicked() {
                     *act = Some(Action::RemoveAll);
                 }
             });
@@ -1084,6 +1186,9 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Log").font(title_font(26.0)).color(INK));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Back").clicked() {
+                        self.tab = Tab::Settings;
+                    }
                     if ui.button("Copy").clicked() {
                         ui.ctx().copy_text(self.log.join("\n"));
                     }
@@ -1114,8 +1219,10 @@ impl App {
         let (dot, title, sub, button, action): (Color32, String, String, &str, Option<Action>) = if self.asking {
             (GOLD, "Asking the server".into(), self.log.last().cloned().unwrap_or_default(), "WAIT", None)
         } else if self.signup && self.tab == Tab::Play {
-            let sub = self.log.last().filter(|l| l.starts_with("sign-up failed")).cloned().unwrap_or_else(|| "Pick a name and a password for this server, and enter your invite code.".into());
-            (BLUE, "New account".into(), sub, "CREATE ACCOUNT", Some(Action::SignUp))
+            match &self.hint {
+                Some(h) => (RED, "New account".into(), h.clone(), "CREATE", Some(Action::SignUp)),
+                None => (BLUE, "New account".into(), "Have an account already? Use the link on the right.".into(), "CREATE", Some(Action::SignUp)),
+            }
         } else if self.tab == Tab::Transfer && !self.installing && !self.busy {
             self.transfer_status()
         } else if self.installing {
@@ -1123,7 +1230,8 @@ impl App {
         } else if self.busy {
             (GOLD, "Installing your copy".into(), self.log.last().cloned().unwrap_or_default(), "INSTALLING", None)
         } else if let Some((c, _)) = &self.child {
-            (BLUE, "Playing".into(), format!("Client running (pid {}). Close the game to play again.", c.id()), "PLAYING", None)
+            let _ = c;
+            (BLUE, "Playing".into(), "The game is running. Have fun! Close it to play again.".into(), "PLAYING", None)
         } else {
             match &self.state {
                 Err(e) => (RED, "Choose your AA Classic folder".into(), e.clone(), "SETTINGS", Some(Action::ChooseFolder)),
@@ -1138,23 +1246,30 @@ impl App {
                     }
                 }
                 Ok(State::NotSetUp) => (
-                    MUTED,
-                    "Not installed yet".into(),
-                    format!("{mode}: makes your own copy of the client. {}", if self.cfg.mode == Mode::Full { "Needs ~45 GB." } else { "Needs ~65 MB." }),
-                    "INSTALL",
+                    if self.hint.is_some() { RED } else { MUTED },
+                    "One step before you play".into(),
+                    self.hint.clone().unwrap_or_else(|| format!(
+                        "The first press makes your own copy of the game ({}), then it starts. AA Classic stays exactly as it is.",
+                        if self.cfg.mode == Mode::Full { "about 45 GB" } else { "about 65 MB, a minute or two" }
+                    )),
+                    if self.cfg.username.trim().is_empty() || self.password.is_empty() { "INSTALL" } else { "PLAY" },
                     Some(Action::Setup),
                 ),
                 Ok(State::BinOutdated) | Ok(State::PakOutdated) => {
-                    (GOLD, "AA Classic was updated".into(), "Update your copy before playing.".into(), "UPDATE", Some(Action::Setup))
+                    (GOLD, "AA Classic was updated".into(), "Update your copy to match it (a minute or two).".into(), "UPDATE", Some(Action::Setup))
                 }
-                Ok(State::Ready) => {
-                    let who = if self.cfg.username.trim().is_empty() { String::new() } else { format!(" as {}", self.cfg.username.trim()) };
-                    let sub = match self.log.last().filter(|l| l.starts_with("sign-in failed")) {
-                        Some(l) => l.clone(),
-                        None => format!("{mode} · server {}{who}", self.cfg.login_ip.trim()),
-                    };
-                    (GREEN, "Ready to play".into(), sub, "PLAY", Some(Action::Play))
-                }
+                Ok(State::Ready) => match &self.hint {
+                    Some(h) => (RED, "Ready to play".into(), h.clone(), "PLAY", Some(Action::Play)),
+                    None => {
+                        let sub = if self.cfg.username.trim().is_empty() {
+                            "Sign in on the right, then press Play.".to_string()
+                        } else {
+                            format!("Signed in as {} · your copy of the game is up to date", self.cfg.username.trim())
+                        };
+                        let _ = mode;
+                        (GREEN, "Ready to play".into(), sub, "PLAY", Some(Action::Play))
+                    }
+                },
             }
         };
 
@@ -1233,8 +1348,8 @@ pub fn run() {
             .with_inner_size([1120.0, 680.0])
             .with_resizable(false)
             .with_decorations(false)
-            .with_title("AAEmu Sandbox"),
+            .with_title("AA Replay"),
         ..Default::default()
     };
-    let _ = eframe::run_native("AAEmu Sandbox", options, Box::new(|cc| Ok(Box::new(App::new(cc)))));
+    let _ = eframe::run_native("AA Replay", options, Box::new(|cc| Ok(Box::new(App::new(cc)))));
 }
