@@ -3,6 +3,7 @@
 
 use crate::cli::default_aac_dir;
 use crate::core::*;
+use crate::net::{self, Server};
 use eframe::egui::{
     self, Align, Align2, Color32, FontData, FontFamily, FontId, Layout, Margin, Painter, Pos2, Rect, RichText, Sense,
     Shape, Stroke, TextEdit, UiBuilder, Vec2, ViewportCommand, pos2, vec2,
@@ -391,6 +392,9 @@ fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, title
 enum Msg {
     Line(String),
     SetupDone(Result<(), String>),
+    /// the account API's answer to a login: account name and launch ticket
+    Ticket(Result<(String, String), String>),
+    SignedUp(Result<String, String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -403,6 +407,7 @@ enum Tab {
 enum Action {
     Setup,
     Play,
+    SignUp,
     ChooseFolder,
     SetMode(Mode),
     RemoveClient,
@@ -414,6 +419,11 @@ struct App {
     paths: Paths,
     cfg: Config,
     password: String,
+    invite: String,
+    /// the sign-in card shows the sign-up form
+    signup: bool,
+    /// waiting for the account API
+    asking: bool,
     log: Vec<String>,
     busy: bool,
     progress: Option<f32>,
@@ -439,6 +449,9 @@ impl App {
             paths,
             cfg,
             password: String::new(),
+            invite: String::new(),
+            signup: std::env::var("AAEMU_SANDBOX_SIGNUP").is_ok(), // for screenshots
+            asking: false,
             log: vec![],
             busy: false,
             progress: None,
@@ -499,14 +512,48 @@ impl App {
         if self.cfg.username.trim().is_empty() || self.password.is_empty() {
             return self.say("enter your account and password for this server");
         }
-        let l = Launch {
-            username: self.cfg.username.trim().to_string(),
-            token: token_from_password(&self.password),
-            login_ip: self.cfg.login_ip.trim().to_string(),
-            game_ip: self.cfg.game_ip.trim().to_string(),
-            lang: self.cfg.lang.clone(),
+        let server = match Server::parse(&self.cfg.login_ip) {
+            Ok(s) => s,
+            Err(e) => return self.say(e),
         };
         let _ = self.cfg.save(&self.paths);
+        let username = self.cfg.username.trim().to_string();
+        if let Server::Api { .. } = server {
+            // the password is checked by the server's account API; the client only ever gets a one-time ticket
+            self.asking = true;
+            self.say("signing in...");
+            let (tx, password) = (self.tx.clone(), self.password.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Ticket(net::login(&server, &username, &password).map(|t| (t.username, t.ticket))));
+            });
+            return;
+        }
+        let token = token_from_password(&self.password);
+        self.launch(aac, username, token);
+    }
+
+    fn start_signup(&mut self) {
+        let server = match Server::parse(&self.cfg.login_ip) {
+            Ok(s) => s,
+            Err(e) => return self.say(e),
+        };
+        if self.cfg.username.trim().is_empty() || self.password.is_empty() {
+            return self.say("choose an account name and a password");
+        }
+        self.asking = true;
+        self.say("creating the account...");
+        let (tx, username, password, invite) = (self.tx.clone(), self.cfg.username.trim().to_string(), self.password.clone(), self.invite.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::SignedUp(net::signup(&server, &username, &password, &invite)));
+        });
+    }
+
+    fn launch(&mut self, aac: AacInstall, username: String, token: String) {
+        let address = match Server::parse(&self.cfg.login_ip).and_then(|s| s.client_address()) {
+            Ok(a) => a,
+            Err(e) => return self.say(e),
+        };
+        let l = Launch { username, token, login_ip: address.clone(), game_ip: address, lang: self.cfg.lang.clone(), login_port: self.cfg.login_port };
         match play(&self.paths, &aac, self.cfg.mode, &l) {
             Ok(c) => {
                 self.say(format!("client started (pid {})", c.id()));
@@ -545,6 +592,7 @@ impl App {
         match a {
             Action::Setup => self.start_setup(),
             Action::Play => self.start_play(),
+            Action::SignUp => self.start_signup(),
             Action::ChooseFolder => {
                 if let Some(d) = rfd::FileDialog::new().set_title("Your AA Classic folder (the one with binNext and game_pak)").pick_folder() {
                     self.cfg.aac_dir = Some(d);
@@ -592,6 +640,30 @@ impl App {
                     }
                     self.say(l)
                 }
+                Msg::Ticket(r) => {
+                    self.asking = false;
+                    match (r, self.aac()) {
+                        (Ok((name, ticket)), Ok(aac)) => {
+                            self.cfg.username = name.clone();
+                            let _ = self.cfg.save(&self.paths);
+                            self.launch(aac, name, ticket);
+                        }
+                        (Err(e), _) | (_, Err(e)) => self.say(format!("sign-in failed: {e}")),
+                    }
+                }
+                Msg::SignedUp(r) => {
+                    self.asking = false;
+                    match r {
+                        Ok(name) => {
+                            self.cfg.username = name.clone();
+                            let _ = self.cfg.save(&self.paths);
+                            self.signup = false;
+                            self.invite.clear();
+                            self.say(format!("account {name} created: press Play"));
+                        }
+                        Err(e) => self.say(format!("sign-up failed: {e}")),
+                    }
+                }
                 Msg::SetupDone(r) => {
                     self.busy = false;
                     self.progress = None;
@@ -613,7 +685,7 @@ impl App {
                 }
             }
         }
-        if self.busy || self.child.is_some() || self.confirm.is_some() {
+        if self.busy || self.asking || self.child.is_some() || self.confirm.is_some() {
             ctx.request_repaint_after(Duration::from_millis(400));
         }
     }
@@ -675,14 +747,14 @@ impl App {
 
         // right: sign in
         let w = 360.0;
-        let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 48.0), vec2(w, 384.0));
+        let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 36.0), vec2(w, if self.signup { 484.0 } else { 424.0 }));
         card(ui.painter(), cardr);
         let mut enter = false;
         ui.scope_builder(UiBuilder::new().max_rect(cardr.shrink2(vec2(28.0, 24.0))).layout(Layout::top_down(Align::Min)), |ui| {
-            ui.label(RichText::new("Sign in").font(title_font(26.0)).color(INK));
+            ui.label(RichText::new(if self.signup { "Create account" } else { "Sign in" }).font(title_font(26.0)).color(INK));
             ui.label(RichText::new("Your account on this server, not your AA Classic account.").size(13.0).color(MUTED));
             ui.add_space(14.0);
-            if field(ui, "Server", &mut self.cfg.login_ip, false, "127.0.0.1").changed() {
+            if field(ui, "Server", &mut self.cfg.login_ip, false, "https://... or 127.0.0.1").changed() {
                 self.cfg.game_ip = self.cfg.login_ip.clone();
             }
             field(ui, "Account", &mut self.cfg.username, false, "account name");
@@ -690,14 +762,32 @@ impl App {
             if pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 enter = true;
             }
+            if self.signup {
+                let inv = field(ui, "Invite code", &mut self.invite, false, "from the server's owner");
+                if inv.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    enter = true;
+                }
+            }
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                 ui.painter().circle_stroke(r.center(), 6.0, Stroke::new(1.2, GOLD));
                 ui.painter().text(r.center(), Align2::CENTER_CENTER, "!", bold_font(10.0), GOLD);
                 ui.label(RichText::new("Never type your AA Classic password here.").size(12.5).color(GOLD));
             });
+            ui.add_space(4.0);
+            // accounts are made on a server with an account API (a link), not on a bare address
+            if matches!(Server::parse(&self.cfg.login_ip), Ok(Server::Api { .. })) {
+                let label = if self.signup { "I already have an account" } else { "No account yet? Create one" };
+                if ui.add(egui::Label::new(RichText::new(label).size(13.0).color(BLUE).underline()).sense(Sense::click())).clicked() {
+                    self.signup = !self.signup;
+                }
+            } else {
+                self.signup = false;
+            }
         });
-        if enter && matches!(self.state, Ok(State::Ready)) && !self.busy && self.child.is_none() {
+        if enter && self.signup && !self.asking {
+            *act = Some(Action::SignUp);
+        } else if enter && matches!(self.state, Ok(State::Ready)) && !self.busy && !self.asking && self.child.is_none() {
             *act = Some(Action::Play);
         }
     }
@@ -794,7 +884,12 @@ impl App {
             Mode::Standard => "Standard install",
             Mode::Full => "Full separation",
         };
-        let (dot, title, sub, button, action): (Color32, String, String, &str, Option<Action>) = if self.busy {
+        let (dot, title, sub, button, action): (Color32, String, String, &str, Option<Action>) = if self.asking {
+            (GOLD, "Asking the server".into(), self.log.last().cloned().unwrap_or_default(), "WAIT", None)
+        } else if self.signup && self.tab == Tab::Play {
+            let sub = self.log.last().filter(|l| l.starts_with("sign-up failed")).cloned().unwrap_or_else(|| "Pick a name and a password for this server, and enter your invite code.".into());
+            (BLUE, "New account".into(), sub, "CREATE ACCOUNT", Some(Action::SignUp))
+        } else if self.busy {
             (GOLD, "Installing your copy".into(), self.log.last().cloned().unwrap_or_default(), "INSTALLING", None)
         } else if let Some((c, _)) = &self.child {
             (BLUE, "Playing".into(), format!("Client running (pid {}). Close the game to play again.", c.id()), "PLAYING", None)
@@ -813,7 +908,11 @@ impl App {
                 }
                 Ok(State::Ready) => {
                     let who = if self.cfg.username.trim().is_empty() { String::new() } else { format!(" as {}", self.cfg.username.trim()) };
-                    (GREEN, "Ready to play".into(), format!("{mode} · server {}{who}", self.cfg.login_ip.trim()), "PLAY", Some(Action::Play))
+                    let sub = match self.log.last().filter(|l| l.starts_with("sign-in failed")) {
+                        Some(l) => l.clone(),
+                        None => format!("{mode} · server {}{who}", self.cfg.login_ip.trim()),
+                    };
+                    (GREEN, "Ready to play".into(), sub, "PLAY", Some(Action::Play))
                 }
             }
         };

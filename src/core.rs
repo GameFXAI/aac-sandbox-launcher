@@ -90,6 +90,8 @@ pub struct Config {
     pub game_ip: String,
     pub username: String,
     pub lang: String,
+    /// The login server's port when it is not the usual 1237 (0 = the usual one).
+    pub login_port: u16,
 }
 
 impl Default for Config {
@@ -101,6 +103,7 @@ impl Default for Config {
             game_ip: "127.0.0.1".into(),
             username: String::new(),
             lang: "en_us".into(),
+            login_port: 0,
         }
     }
 }
@@ -383,14 +386,21 @@ pub struct Launch {
     pub login_ip: String,
     pub game_ip: String,
     pub lang: String,
+    /// 0 = the client's own default (1237)
+    pub login_port: u16,
 }
 
 /// The command line the client gets (the token is in it: never log this).
 pub fn client_args(l: &Launch) -> Vec<String> {
-    ["-r", "+auth_ip", &l.login_ip, "-uid", &l.username, "-token", &l.token, "--lang", &l.lang, "+cl_serveraddr", &l.game_ip]
+    let mut a: Vec<String> = ["-r", "+auth_ip", &l.login_ip, "-uid", &l.username, "-token", &l.token, "--lang", &l.lang, "+cl_serveraddr", &l.game_ip]
         .iter()
         .map(|s| s.to_string())
-        .collect()
+        .collect();
+    if l.login_port != 0 {
+        a.push("+auth_port".into());
+        a.push(l.login_port.to_string());
+    }
+    a
 }
 
 /// The environment changes for the client: sandbox profile, no uploads to AA Classic.
@@ -644,7 +654,9 @@ mod tests {
         assert_eq!(get("AAC_NO_CRASH_UPLOAD"), "1");
         assert_eq!(get("AAC_NO_PERF_UPLOAD"), "1");
         assert!(remove.contains(&"SteamAppId".to_string()));
-        let args = client_args(&Launch { username: "u".into(), token: "t".into(), login_ip: "1.2.3.4".into(), game_ip: "5.6.7.8".into(), lang: "en_us".into() });
+        let args = client_args(&Launch { username: "u".into(), token: "t".into(), login_ip: "1.2.3.4".into(), game_ip: "5.6.7.8".into(), lang: "en_us".into(), login_port: 0 });
         assert_eq!(args.join(" "), "-r +auth_ip 1.2.3.4 -uid u -token t --lang en_us +cl_serveraddr 5.6.7.8");
+        let args = client_args(&Launch { username: "u".into(), token: "t".into(), login_ip: "1.2.3.4".into(), game_ip: "1.2.3.4".into(), lang: "en_us".into(), login_port: 2237 });
+        assert!(args.join(" ").ends_with("+cl_serveraddr 1.2.3.4 +auth_port 2237"));
     }
 }

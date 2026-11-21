@@ -4,6 +4,7 @@
 mod cli;
 mod core;
 mod gui;
+mod net;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
