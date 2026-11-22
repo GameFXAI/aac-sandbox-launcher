@@ -118,14 +118,20 @@ The launcher can replace itself with a newer version named in a signed manifest 
 
 It is off until a manifest address exists: `MANIFEST_URL` in `src/update.rs`, or `manifest_url` in `launcher.json`. The window then shows "Update launcher to X" in the top bar; `update` does it from the command line.
 
-Publishing a release (the owner):
+Publishing a release: bump `version` in `Cargo.toml`, then
 
 ```
-aac-sandbox-launcher manifest make <new exe> 0.2.0 https://<host>/aac-sandbox-launcher.exe manifest.json
-aac-sandbox-launcher manifest sign manifest.json <private key file>
+.\installer\release.ps1 -Version 0.2.1 -KeyFile <private key file>
 ```
 
-then upload the exe, `manifest.json` and `manifest.json.sig`. The private key was made with `manifest keygen` and is kept outside every repository; whoever has it can update every launcher, and a lost key means a new launcher has to be handed out by hand.
+It tests and builds, Authenticode-signs the exe when signing is set up (`docs/code-signing.md`; otherwise the release
+is unsigned and says so), makes `release\aac-sandbox-launcher-<version>.exe` and `release\manifest-<version>.json`
+with its signature, and builds the signed (or unsigned) `installer\out\AAReplaySetup.exe`. By hand, the update part
+is `manifest make <exe> <version> <url> <out>` and `manifest sign <out> <key>`.
+
+Then upload the exe and the manifest (as `manifest.json` and `manifest.json.sig`, keeping the last one as
+`manifest-<old version>.json`) to the box's `/srv/aareplay/www/launcher/`, and check with the previous exe's
+`update --check`. The private key was made with `manifest keygen` and is kept outside every repository; whoever has it can update every launcher, and a lost key means a new launcher has to be handed out by hand.
 
 Checked 2026-11-21 with a file server on this PC: a 0.1.0 exe found, downloaded and swapped in a 0.2.0; a manifest changed after signing was refused. Not set up: a real host for the files.
 
@@ -145,8 +151,11 @@ it asks before removing the data folder with the game copy (and a copy on AA Cla
 
 ```
 cargo build --release
-iscc /DAppVersion=0.2.0 installer\aac-sandbox-launcher.iss     -> installer\out\AAReplaySetup.exe
+iscc /DAppVersion=0.2.0 installer\aac-sandbox-launcher.iss     -> installer\out\AAReplaySetup.exe (unsigned)
 ```
+
+`release.ps1` does this too, and signs the setup and its uninstaller when signing is set up (`/DSign` and the
+`aareplay` sign tool, `installer\sign.ps1`).
 
 The account API serves that file from `Accounts:DownloadsDir` as `/api/download/AAReplaySetup-<code>.exe`, and the
 invite page `/api/join/<code>` links to it (AA Replay server: `Tools/invites/new-invite.ps1`).
@@ -161,5 +170,6 @@ GPL-3.0, see `LICENSE`.
 ## Not built yet
 
 - Crash reports sent to our own receiver (Report a problem sends the logs by hand).
-- Code signing (the installer and exe are unsigned: SmartScreen warns once).
+- Code signing: the release steps sign when an Artifact Signing account is set up (`docs/code-signing.md`); until the
+  owner's account and identity check are done, releases are unsigned and SmartScreen warns once.
 - Importing an action-bar layout from an existing profile.

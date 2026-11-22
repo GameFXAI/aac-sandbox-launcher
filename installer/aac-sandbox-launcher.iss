@@ -53,6 +53,12 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 CloseApplications=yes
 RestartApplications=no
+; Authenticode signing of the setup and its uninstaller, only when release.ps1 compiles with /DSign and passes the
+; "aareplay" sign tool (installer\sign.ps1 -Require). Without it the installer is unsigned, as before.
+#ifdef Sign
+SignTool=aareplay
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
