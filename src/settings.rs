@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Settings that are taken when their name is exactly one of these ...
-const NAMES: &[&str] = &["sys_spec_full", "r_driver", "r_multithreaded", "r_windowx", "r_windowy", "r_width", "r_height", "r_fullscreen", "r_vsync", "r_pixelsync", "login_first_movie"];
+const NAMES: &[&str] = &["sys_spec_full", "r_driver", "r_multithreaded", "r_windowx", "r_windowy", "r_width", "r_height", "r_fullscreen", "r_vsync", "r_pixelsync"];
 /// ... or starts with one of these (the game's own options: quality levels, effects, sound volumes).
 const PREFIXES: &[&str] = &["option_", "e_use_"];
 const MAX_FILE: u64 = 1 << 20;
@@ -82,10 +82,31 @@ fn with_language(ours: &str, lang: &str) -> String {
     out.join("\r\n") + "\r\n"
 }
 
+/// `ours` with one `name = value` line for `name`: in place of the first, the others dropped, else at the end.
+fn with_setting(ours: &str, name: &str, value: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut done = false;
+    for line in ours.lines() {
+        if parse(line).is_some_and(|(n, _)| n == name) {
+            if !done {
+                out.push(format!("{name} = {value}"));
+                done = true;
+            }
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    if !done {
+        out.push(format!("{name} = {value}"));
+    }
+    out.join("\r\n") + "\r\n"
+}
+
 /// What our client's own settings file must hold before a start:
 /// - the language: without that line the client shows its interface in Korean, whatever `--lang` says;
-/// - `login_first_movie = 1` when the file says nothing about it: otherwise the client plays its intro movie for
-///   about 150 seconds before it logs in, and a launch ticket is long dead by then. A value already there stays.
+/// - `login_first_movie = 1`, whatever the file says: otherwise the client plays its intro movie for about 150
+///   seconds before it logs in, and a launch ticket (good for two minutes) is dead by then. AA Classic's own file has
+///   it at 0, so it is never taken from there either (see `NAMES`).
 /// The file is written only when something changes.
 pub fn set_language(paths: &Paths, lang: &str) -> Result<(), String> {
     if lang.is_empty() || lang.len() > 16 || !lang.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -93,15 +114,11 @@ pub fn set_language(paths: &Paths, lang: &str) -> Result<(), String> {
     }
     let file = paths.docs().join("system.cfg");
     let current = fs::read(&file).map(|b| String::from_utf8_lossy(&b).to_string()).unwrap_or_default();
-    let has = |n: &str| current.lines().filter_map(parse).any(|(name, _)| name == n);
-    let movie = has("login_first_movie");
-    if movie && current.lines().filter_map(parse).any(|(name, value)| name == "locale" && value.trim_matches('"') == lang) {
+    let values = |n: &str| current.lines().filter_map(parse).filter(|(name, _)| *name == n).map(|(_, v)| v.trim_matches('"').to_string()).collect::<Vec<_>>();
+    if values("login_first_movie") == ["1"] && values("locale") == [lang] {
         return Ok(());
     }
-    let mut text = with_language(&current, lang);
-    if !movie {
-        text.push_str("login_first_movie = 1\r\n");
-    }
+    let text = with_setting(&with_language(&current, lang), "login_first_movie", "1");
     fs::create_dir_all(paths.docs()).map_err(|e| e.to_string())?;
     fs::write(&file, text).map_err(|e| format!("cannot write the settings: {e}"))
 }
@@ -177,16 +194,16 @@ mod tests {
         let file = paths.docs().join("system.cfg");
         set_language(&paths, "en_us").unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "locale = en_us\r\nlogin_first_movie = 1\r\n");
-        // the player's own choice about the movie stays
-        fs::write(&file, "r_width = 800\r\nlocale = \"ko\"\r\nlocale = de\r\nlogin_first_movie = 0\r\nmy_own = 1\r\n").unwrap();
+        // the movie is always off before a start: it outlasts the launch ticket
+        fs::write(&file, "r_width = 800\r\nlocale = \"ko\"\r\nlocale = de\r\nlogin_first_movie = 0\r\nmy_own = 1\r\nlogin_first_movie = 1\r\n").unwrap();
         set_language(&paths, "en_us").unwrap();
-        assert_eq!(fs::read_to_string(&file).unwrap(), "r_width = 800\r\nlocale = en_us\r\nlogin_first_movie = 0\r\nmy_own = 1\r\n");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "r_width = 800\r\nlocale = en_us\r\nlogin_first_movie = 1\r\nmy_own = 1\r\n");
         let before = fs::metadata(&file).unwrap().modified().unwrap();
         set_language(&paths, "en_us").unwrap();
         assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), before);
-        // copying the player's display settings keeps it
-        let (text, _) = merge(&fs::read_to_string(&file).unwrap(), "r_width = 1920\nlocale = fr\n");
-        assert_eq!(text, "r_width = 1920\r\nlocale = en_us\r\nlogin_first_movie = 0\r\nmy_own = 1\r\n");
+        // bringing AA Classic's settings over takes neither its language nor its movie setting (0 there)
+        let (text, _) = merge(&fs::read_to_string(&file).unwrap(), "r_width = 1920\nlocale = fr\nlogin_first_movie = 0\n");
+        assert_eq!(text, "r_width = 1920\r\nlocale = en_us\r\nlogin_first_movie = 1\r\nmy_own = 1\r\n");
         assert!(set_language(&paths, "en us; x").is_err());
     }
 
