@@ -143,8 +143,19 @@ impl Config {
     }
 }
 
-/// The hosted arena a new launcher points at (account API over HTTPS; the game ports are on the same box).
+/// The hosted arena every launcher plays on (account API over HTTPS; the game ports are on the same box).
 pub const DEFAULT_SERVER: &str = "https://77-42-46-123.sslip.io";
+
+/// The server this launcher talks to. Players never choose it: always the arena box. For development only, the
+/// environment variable AAEMU_SANDBOX_SERVER points it elsewhere (a link, or a bare address like 127.0.0.1); there is
+/// nothing for it in the window, and the address saved in launcher.json by older launchers is ignored.
+pub fn server_address() -> String {
+    server_from(std::env::var("AAEMU_SANDBOX_SERVER").ok())
+}
+
+fn server_from(env: Option<String>) -> String {
+    env.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| DEFAULT_SERVER.to_string())
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -164,10 +175,14 @@ impl Default for Config {
 
 impl Config {
     pub fn load(paths: &Paths) -> Config {
-        fs::read_to_string(paths.config_file())
+        let mut c: Config = fs::read_to_string(paths.config_file())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // never the saved address (0.2.0 and older let players type one, e.g. 127.0.0.1)
+        c.login_ip = server_address();
+        c.game_ip = c.login_ip.clone();
+        c
     }
     pub fn save(&self, paths: &Paths) -> io::Result<()> {
         fs::create_dir_all(&paths.root)?;
@@ -654,6 +669,25 @@ mod tests {
         let cfg = super::Config::default();
         let s = crate::net::Server::parse(&cfg.login_ip).unwrap();
         assert!(matches!(s, crate::net::Server::Api { ref host, .. } if host == "77-42-46-123.sslip.io"));
+    }
+
+    #[test]
+    fn players_never_choose_the_server() {
+        // only the developers' environment variable moves it; empty means unset
+        assert_eq!(super::server_from(None), super::DEFAULT_SERVER);
+        assert_eq!(super::server_from(Some("  ".into())), super::DEFAULT_SERVER);
+        assert_eq!(super::server_from(Some(" 127.0.0.1 ".into())), "127.0.0.1");
+        // an address saved by an older launcher (it let players type one) is not used
+        let dir = std::env::temp_dir().join(format!("aac-launcher-server-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = super::Paths { root: dir.clone(), ..super::Paths::new() };
+        std::fs::write(paths.config_file(), r#"{"login_ip":"127.0.0.1","game_ip":"127.0.0.1","username":"kim"}"#).unwrap();
+        let cfg = super::Config::load(&paths);
+        assert_eq!(cfg.login_ip, super::server_address());
+        assert_eq!(cfg.game_ip, cfg.login_ip);
+        assert_eq!(cfg.username, "kim");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     use super::*;

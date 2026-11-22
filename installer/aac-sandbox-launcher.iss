@@ -1,7 +1,7 @@
 ; Installer for the AA Replay launcher (Inno Setup 6).
 ;
 ; Build:   cargo build --release
-;          iscc /DAppVersion=0.2.0 installer\aac-sandbox-launcher.iss
+;          iscc /DAppVersion=0.2.1 installer\aac-sandbox-launcher.iss
 ; Result:  installer\out\AAReplaySetup.exe
 ;
 ; One installer for every tester. The account API hands it out as AAReplaySetup-<invite code>.exe (the same bytes
@@ -19,7 +19,7 @@
 ;   are removed only when the player says yes.
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 #define AppName "AA Replay"
 #define AppExe "aac-sandbox-launcher.exe"

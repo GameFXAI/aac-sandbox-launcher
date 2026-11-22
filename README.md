@@ -14,7 +14,10 @@ still `aac-sandbox-launcher.exe` and its folder `%LOCALAPPDATA%\AAEmuSandbox`, s
 4. Once, after the first sign-in: "Bring your AA Classic settings?" (graphics and sound, interface options), with
    **Bring them and play** / **Not now, just play**. Settings (the gear) can do it, or undo it, any time.
 
-Everything else (server, install mode, client builds, game download, bringing settings) is behind the gear.
+Everything else (install mode, client builds, game download, bringing settings) is behind the gear.
+There is no server choice: the launcher always plays on the arena box (`core::DEFAULT_SERVER`); an address saved by
+an older launcher is ignored. For development only, the environment variable `AAEMU_SANDBOX_SERVER` (a link or a
+bare address such as `127.0.0.1`) points it elsewhere, and `play --server` does the same on the command line.
 **Report a problem** (top bar) sends what the tester writes, plus the tail of `launcher.log` and the game's
 `ArcheAge.log` (long hex runs, such as sign-in tokens, are blanked), to the server's account API. When that fails,
 it saves the report as a file and opens its folder, so it can be sent by hand.
@@ -151,7 +154,7 @@ it asks before removing the data folder with the game copy (and a copy on AA Cla
 
 ```
 cargo build --release
-iscc /DAppVersion=0.2.0 installer\aac-sandbox-launcher.iss     -> installer\out\AAReplaySetup.exe (unsigned)
+iscc /DAppVersion=0.2.1 installer\aac-sandbox-launcher.iss     -> installer\out\AAReplaySetup.exe (unsigned)
 ```
 
 `release.ps1` does this too, and signs the setup and its uninstaller when signing is set up (`/DSign` and the

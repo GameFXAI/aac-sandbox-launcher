@@ -572,7 +572,6 @@ struct App {
     /// the server's answer to /api/info: Ok(name) when it is up
     server_up: Option<Result<String, String>>,
     /// the sign-in card shows the server address field
-    edit_server: bool,
     /// keep the sign-in on this PC (the server's token, never the password)
     remember: bool,
     /// the remembered sign-in for this server, if any
@@ -634,7 +633,6 @@ impl App {
             xfer: Xfer::default(),
             hint: None,
             server_up: None,
-            edit_server: false,
             remember: true,
             saved,
             baked_invite,
@@ -1314,7 +1312,7 @@ impl App {
         let tall = if self.saved.is_some() {
             250.0
         } else {
-            (if self.signup && self.baked_invite.is_none() { 482.0 } else { 416.0 }) + if self.edit_server { 66.0 } else { 0.0 }
+            if self.signup && self.baked_invite.is_none() { 482.0 } else { 416.0 }
         };
         let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 36.0), vec2(w, tall));
         card(ui.painter(), cardr);
@@ -1332,7 +1330,7 @@ impl App {
             ui.label(RichText::new(title).font(title_font(26.0)).color(INK));
             ui.label(RichText::new(sub).size(13.0).color(MUTED));
             ui.add_space(8.0);
-            // the server: a status line; the address only when someone asks to change it
+            // the server: a status line only (always the arena box; core::server_address)
             ui.horizontal(|ui| {
                 let (dot, text) = match &self.server_up {
                     None => (MUTED, "Checking the arena server…".to_string()),
@@ -1345,26 +1343,8 @@ impl App {
                 if let Some(Err(e)) = &self.server_up {
                     l.on_hover_text(e.as_str());
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let t = if self.edit_server { "done" } else { "change" };
-                    if ui.add(egui::Label::new(RichText::new(t).size(12.5).color(MUTED).underline()).sense(Sense::click())).on_hover_text("Play on another server").clicked() {
-                        self.edit_server = !self.edit_server;
-                        if !self.edit_server {
-                            self.check_server();
-                        }
-                    }
-                });
             });
             ui.add_space(6.0);
-            if self.edit_server {
-                let r = field(ui, "Server", &mut self.cfg.login_ip, false, "https://... or 127.0.0.1");
-                if r.changed() {
-                    self.cfg.game_ip = self.cfg.login_ip.clone();
-                }
-                if r.lost_focus() {
-                    self.check_server();
-                }
-            }
             if let Some(s) = &self.saved {
                 ui.add_space(6.0);
                 ui.label(RichText::new("SIGNED IN AS").size(11.5).color(MUTED).extra_letter_spacing(1.2));
@@ -1531,18 +1511,6 @@ impl App {
                     None => {
                         ui.label(RichText::new("Not remembered on this PC: Play asks for the password.").color(INK));
                     }
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Server").size(13.0).color(MUTED));
-                let r = ui.add(TextEdit::singleline(&mut self.cfg.login_ip).desired_width(380.0).hint_text("https://... or 127.0.0.1"));
-                if r.changed() {
-                    self.cfg.game_ip = self.cfg.login_ip.clone();
-                }
-                if r.lost_focus() {
-                    let _ = self.cfg.save(&self.paths);
-                    self.saved = signin::load(&self.paths).filter(|s| s.server == self.cfg.login_ip.trim());
-                    self.check_server();
                 }
             });
             ui.add_space(6.0);
