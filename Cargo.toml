@@ -1,6 +1,6 @@
 [package]
 name = "aac-sandbox-launcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Launcher for a separate, sandboxed copy of the AA Classic client that plays on AAEmu servers"
 license = "GPL-3.0-only"
