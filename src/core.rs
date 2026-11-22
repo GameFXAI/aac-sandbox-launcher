@@ -17,6 +17,16 @@ use std::time::SystemTime;
 
 pub const APP_DIR: &str = "AAEmuSandbox";
 
+/// Names our copy's folder when it is on AA Classic's drive instead of in the launcher's folder.
+const CLIENT_DIR_FILE: &str = "client-dir.txt";
+
+/// `X:\AAReplay\client` (or the same under a mount folder): the only shape a moved copy's folder can have, so a
+/// damaged or edited `client-dir.txt` cannot point our writes at any other folder.
+fn is_other_drive_client(d: &Path) -> bool {
+    let s = d.to_string_lossy().replace('/', "\\").to_lowercase();
+    d.is_absolute() && s.ends_with(&format!("\\{}\\client", crate::find::OTHER_DRIVE_DIR.to_lowercase())) && !s.contains("\\..\\")
+}
+
 /// Process names that must not be running when our client starts (compared case-insensitively).
 pub const BLOCKING_PROCESSES: [&str; 2] = ["archeage.exe", "archeage classic launcher.exe"];
 
@@ -30,23 +40,50 @@ const ENV_REMOVE: [&str; 4] = ["SteamAppId", "SteamGameId", "AAC_PERF_SESSION", 
 #[derive(Clone, Debug)]
 pub struct Paths {
     pub root: PathBuf,
+    /// Our copy of the game: `root\client`, or `<AA Classic's drive>\AAReplay\client` when AA Classic is on another
+    /// drive (find.rs), as `client-dir.txt` in the root says.
+    client: PathBuf,
 }
 
 impl Paths {
     /// `%LOCALAPPDATA%\AAEmuSandbox`, or `AAEMU_SANDBOX_ROOT` when set (tests).
     pub fn new() -> Paths {
-        if let Some(r) = std::env::var("AAEMU_SANDBOX_ROOT").ok().filter(|r| !r.trim().is_empty()) {
-            return Paths { root: PathBuf::from(r) };
-        }
-        let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
-        Paths { root: PathBuf::from(base).join(APP_DIR) }
+        let root = match std::env::var("AAEMU_SANDBOX_ROOT").ok().filter(|r| !r.trim().is_empty()) {
+            Some(r) => PathBuf::from(r),
+            None => PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into())).join(APP_DIR),
+        };
+        let client = fs::read_to_string(root.join(CLIENT_DIR_FILE)).ok().map(|t| PathBuf::from(t.trim())).filter(|d| is_other_drive_client(d)).unwrap_or_else(|| root.join("client"));
+        Paths { root, client }
     }
     #[allow(dead_code)] // tests
     pub fn at(root: impl Into<PathBuf>) -> Paths {
-        Paths { root: root.into() }
+        let root = root.into();
+        Paths { client: root.join("client"), root }
     }
     pub fn client(&self) -> PathBuf {
-        self.root.join("client")
+        self.client.clone()
+    }
+    /// Is our copy somewhere else than in the launcher's own folder?
+    #[allow(dead_code)] // tests
+    pub fn client_moved(&self) -> bool {
+        self.client != self.root.join("client")
+    }
+    /// Puts our copy at `dir` from now on (`None`: back in the launcher's folder). Only a folder named
+    /// `AAReplay\client` is taken as a place outside the launcher's folder.
+    pub fn set_client(&mut self, dir: Option<PathBuf>) -> Result<(), String> {
+        fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
+        match dir {
+            Some(d) if is_other_drive_client(&d) => {
+                fs::write(self.root.join(CLIENT_DIR_FILE), d.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+                self.client = d;
+            }
+            Some(d) => return Err(format!("not a place for the copy: {}", d.display())),
+            None => {
+                let _ = fs::remove_file(self.root.join(CLIENT_DIR_FILE));
+                self.client = self.root.join("client");
+            }
+        }
+        Ok(())
     }
     pub fn bin(&self) -> PathBuf {
         self.client().join("binNext")
@@ -96,6 +133,8 @@ pub struct Config {
     pub login_port: u16,
     /// Where the launcher's signed update manifest is; empty = the address built into the launcher, if any.
     pub manifest_url: String,
+    /// The first start's "bring your AA Classic settings" offer was answered (it is made once).
+    pub transfer_offered: bool,
 }
 
 impl Config {
@@ -118,6 +157,7 @@ impl Default for Config {
             lang: "en_us".into(),
             login_port: 0,
             manifest_url: String::new(),
+            transfer_offered: false,
         }
     }
 }
@@ -163,7 +203,7 @@ impl AacInstall {
         if !root.join("game_pak").is_file() {
             return Err(format!("{} has no game_pak file", root.display()));
         }
-        if is_inside(&root, &paths.root) || is_inside(&paths.root, &root) {
+        if is_inside(&root, &paths.root) || is_inside(&paths.root, &root) || is_inside(&root, &paths.client) || is_inside(&paths.client, &root) {
             return Err("the AA Classic folder and the launcher's folder must not contain each other".into());
         }
         Ok(AacInstall { root })
@@ -187,9 +227,9 @@ pub fn is_inside(p: &Path, dir: &Path) -> bool {
     p == d || p.starts_with(&(d + "\\"))
 }
 
-/// Refuses any write that would land outside the launcher's own folder.
+/// Refuses any write that would land outside the launcher's own folder (or our copy's folder on another drive).
 fn ensure_ours(paths: &Paths, target: &Path) -> Result<(), String> {
-    if is_inside(target, &paths.root) && target != paths.root {
+    if (is_inside(target, &paths.root) && target != paths.root) || is_inside(target, &paths.client) {
         Ok(())
     } else {
         Err(format!("refusing to write outside {}: {}", paths.root.display(), target.display()))
@@ -287,6 +327,20 @@ pub fn status(paths: &Paths, aac: Option<&AacInstall>, mode: Mode) -> State {
 // ---------------------------------------------------------------------------------------------------------------
 // Set up / refresh / remove
 // ---------------------------------------------------------------------------------------------------------------
+
+/// Before a Standard set-up: when AA Classic is on another drive than our copy, the copy moves to AA Classic's drive
+/// (`<drive>\AAReplay\client`), since game_pak can only be linked within one drive. Returns what was decided, in words.
+pub fn place_client(paths: &mut Paths, aac: &AacInstall, mode: Mode) -> Result<Option<String>, String> {
+    if mode != Mode::Standard {
+        return Ok(None);
+    }
+    let Some(to) = crate::find::client_place(&paths.client(), aac.root()) else { return Ok(None) };
+    fs::create_dir_all(&to).map_err(|e| {
+        format!("AA Classic is on {}, and the launcher cannot make its folder there ({}: {e}). Choose Full separation in Settings to copy the game data to this drive instead.", crate::find::drive_name(aac.root()), to.display())
+    })?;
+    paths.set_client(Some(to.clone()))?;
+    Ok(Some(format!("AA Classic is on {}: your copy goes to {} so it can link the game data (AA Classic is not changed)", crate::find::drive_name(aac.root()), to.display())))
+}
 
 /// Builds or refreshes our copy. `log` gets progress lines.
 pub fn setup(paths: &Paths, aac: &AacInstall, mode: Mode, log: &dyn Fn(String)) -> Result<(), String> {
@@ -709,6 +763,32 @@ mod tests {
         assert!(ensure_ours(&paths, Path::new(r"C:\x\AAEmuSandbox")).is_err());
         assert!(ensure_ours(&paths, Path::new(r"C:\x\AAEmuSandboxEvil\client")).is_err());
         assert!(ensure_ours(&paths, Path::new(r"C:\Games\AAClassic\game_pak")).is_err());
+        // a copy on AA Classic's drive: only that folder is added
+        let mut moved = Paths::at(r"C:\x\AAEmuSandbox");
+        moved.client = PathBuf::from(r"D:\AAReplay\client");
+        assert!(ensure_ours(&moved, Path::new(r"D:\AAReplay\client\binNext")).is_ok());
+        assert!(ensure_ours(&moved, Path::new(r"D:\AAReplay")).is_err());
+        assert!(ensure_ours(&moved, Path::new(r"D:\Games\AAClassic\game_pak")).is_err());
+    }
+
+    #[test]
+    fn a_moved_copy_folder_has_one_shape_only() {
+        assert!(is_other_drive_client(Path::new(r"D:\AAReplay\client")));
+        assert!(is_other_drive_client(Path::new(r"E:\Mounts\Games\AAReplay\client")));
+        assert!(!is_other_drive_client(Path::new(r"D:\Games\AAClassic")));
+        assert!(!is_other_drive_client(Path::new(r"D:\")));
+        assert!(!is_other_drive_client(Path::new(r"AAReplay\client")));
+        assert!(!is_other_drive_client(Path::new(r"D:\AAReplay\..\Games\AAReplay\client")));
+        let d = std::env::temp_dir().join(format!("aareplay-clientdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let mut p = Paths::at(&d);
+        assert!(p.set_client(Some(PathBuf::from(r"D:\Games"))).is_err());
+        p.set_client(Some(PathBuf::from(r"D:\AAReplay\client"))).unwrap();
+        assert!(p.client_moved());
+        assert_eq!(fs::read_to_string(d.join(CLIENT_DIR_FILE)).unwrap(), r"D:\AAReplay\client");
+        p.set_client(None).unwrap();
+        assert!(!p.client_moved() && !d.join(CLIENT_DIR_FILE).exists());
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

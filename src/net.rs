@@ -95,6 +95,26 @@ pub struct Info {
 pub struct Ticket {
     pub username: String,
     pub ticket: String,
+    /// with "remember me": the remembered sign-in, sent later in place of the password. Never log it either.
+    #[serde(default)]
+    pub session: Option<String>,
+}
+
+/// How the player proves the account: the password typed now, or a remembered sign-in.
+#[derive(Clone, Copy)]
+pub enum Cred<'a> {
+    Password(&'a str),
+    Session(&'a str),
+}
+
+impl Cred<'_> {
+    /// The fields a request carries for it.
+    fn put(&self, body: &mut serde_json::Value) {
+        match self {
+            Cred::Password(p) => body["password"] = (*p).into(),
+            Cred::Session(s) => body["session"] = (*s).into(),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -115,6 +135,9 @@ pub fn explain(code: &str) -> String {
         "TooManyAttempts" => "too many tries: wait ten minutes".into(),
         "GameServerOffline" => "the game server is not running right now: try again in a minute".into(),
         "BadTransfer" => "the server could not use what was sent".into(),
+        "BadSession" => "your saved sign-in has run out: enter your password once more".into(),
+        "BadReport" => "the report was empty or too large".into(),
+        "ReportsFull" => "the server takes no more reports right now".into(),
         "" => "the server refused the request".into(),
         other => format!("the server refused the request ({other})"),
     }
@@ -171,14 +194,45 @@ pub fn signup(server: &Server, username: &str, password: &str, invite: &str) -> 
     r.into_json::<Made>().map(|m| m.username).map_err(|e| format!("the server's answer was not understood: {e}"))
 }
 
-pub fn login(server: &Server, username: &str, password: &str) -> Result<Ticket, String> {
-    let body = serde_json::json!({ "username": username, "password": password });
+/// Signs in for a launch ticket. With `remember` and a password, the server also gives a remembered sign-in.
+pub fn login(server: &Server, username: &str, cred: Cred, remember: bool) -> Result<Ticket, String> {
+    let device = std::env::var("COMPUTERNAME").unwrap_or_default();
+    let mut body = serde_json::json!({ "username": username, "remember": remember, "device": device });
+    cred.put(&mut body);
     let r = agent().post(&format!("{}/api/login", api_url(server)?)).send_json(body).map_err(failed)?;
     let t: Ticket = r.into_json().map_err(|e| format!("the server's answer was not understood: {e}"))?;
     if !crate::core::valid_token(&t.ticket) {
         return Err("the server's ticket is not in the expected form".into());
     }
+    if t.session.as_deref().is_some_and(|s| !crate::core::valid_token(s)) {
+        return Err("the server's sign-in is not in the expected form".into());
+    }
     Ok(t)
+}
+
+/// Ends a remembered sign-in on the server ("sign out").
+pub fn logout(server: &Server, session: &str) -> Result<(), String> {
+    agent().post(&format!("{}/api/logout", api_url(server)?)).send_json(serde_json::json!({ "session": session })).map_err(failed)?;
+    Ok(())
+}
+
+/// "Report a problem": the player's words and the two logs, kept on the server for its owner. The answer is the
+/// report's id. The sign-in, when there is one, only marks the account name as checked.
+pub fn report(server: &Server, username: &str, session: Option<&str>, text: &str, launcher_log: &str, client_log: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Saved {
+        id: String,
+    }
+    let body = serde_json::json!({
+        "username": username, "session": session.unwrap_or(""), "text": text,
+        "launcherLog": launcher_log, "clientLog": client_log, "version": crate::update::VERSION,
+    });
+    let r = ureq::AgentBuilder::new().timeout(Duration::from_secs(60)).redirects(0).build()
+        .post(&format!("{}/api/report", api_url(server)?)).send_json(body).map_err(|e| match e {
+            ureq::Error::Status(404, _) => "this server takes no reports".to_string(),
+            e => failed(e),
+        })?;
+    r.into_json::<Saved>().map(|s| s.id).map_err(|e| format!("the server's answer was not understood: {e}"))
 }
 
 /// What the server took from a transfer: the parts it will put on the character at the next world entry.
@@ -188,12 +242,12 @@ pub struct Accepted {
     pub accepted: Vec<String>,
 }
 
-/// Sends a transfer from AA Classic (see transfer.rs for what is in it) with the account's own name and password.
-/// The server keeps it for the account and applies it when one of its characters next enters the world.
-pub fn transfer(server: &Server, username: &str, password: &str, payload: &serde_json::Value) -> Result<Accepted, String> {
+/// Sends a transfer from AA Classic (see transfer.rs for what is in it) with the account's name and its password or
+/// remembered sign-in. The server keeps it for the account and applies it when one of its characters next enters the world.
+pub fn transfer(server: &Server, username: &str, cred: Cred, payload: &serde_json::Value) -> Result<Accepted, String> {
     let mut body = payload.clone();
     body["username"] = username.into();
-    body["password"] = password.into();
+    cred.put(&mut body);
     let r = agent().post(&format!("{}/api/transfer", api_url(server)?)).send_json(body).map_err(|e| match e {
         ureq::Error::Status(404, _) => "this server does not take transfers yet".to_string(),
         e => failed(e),
@@ -305,7 +359,7 @@ mod tests {
     #[test]
     fn a_bare_address_has_no_account_api() {
         let s = Server::parse("127.0.0.1").unwrap();
-        assert!(login(&s, "a", "b").is_err());
+        assert!(login(&s, "a", Cred::Password("b"), false).is_err());
         assert!(signup(&s, "a", "b", "c").is_err());
     }
 
@@ -340,7 +394,8 @@ mod tests {
     #[test]
     fn login_gives_the_ticket() {
         let (s, h) = serve_once("200 OK", r#"{"username":"Friend","ticket":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","expiresIn":120}"#);
-        let t = login(&s, "friend", "long enough").unwrap();
+        let t = login(&s, "friend", Cred::Password("long enough"), false).unwrap();
+        assert!(t.session.is_none());
         assert_eq!(t.username, "Friend");
         assert_eq!(t.ticket.len(), 64);
         let sent = h.join().unwrap();
@@ -349,29 +404,58 @@ mod tests {
     }
 
     #[test]
+    fn remember_gives_a_session_and_a_session_signs_in_without_the_password() {
+        let (s, h) = serve_once("200 OK", r#"{"username":"Friend","ticket":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","session":"ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100","sessionExpiresIn":2592000}"#);
+        let t = login(&s, "friend", Cred::Password("long enough"), true).unwrap();
+        assert_eq!(t.session.as_deref().map(str::len), Some(64));
+        let sent = h.join().unwrap();
+        assert!(sent.contains(r#""remember":true"#) && sent.contains(r#""password":"long enough""#));
+        let (s, h) = serve_once("200 OK", r#"{"username":"Friend","ticket":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}"#);
+        login(&s, "friend", Cred::Session("ffee"), true).unwrap();
+        let sent = h.join().unwrap();
+        assert!(sent.contains(r#""session":"ffee""#) && !sent.contains("password"));
+        let (s, h) = serve_once("401 Unauthorized", r#"{"error":"BadSession"}"#);
+        assert!(login(&s, "friend", Cred::Session("ffee"), true).err().unwrap().contains("password"));
+        h.join().unwrap();
+        // a sign-in in another form is refused like a bad ticket
+        let (s, h) = serve_once("200 OK", r#"{"username":"Friend","ticket":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","session":"-x"}"#);
+        assert!(login(&s, "friend", Cred::Password("long enough"), true).is_err());
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn a_report_carries_the_words_and_both_logs() {
+        let (s, h) = serve_once("200 OK", r#"{"id":"20261122-1"}"#);
+        assert_eq!(report(&s, "friend", None, "it broke", "launcher lines", "client lines").unwrap(), "20261122-1");
+        let sent = h.join().unwrap();
+        assert!(sent.starts_with("POST /api/report "));
+        assert!(sent.contains(r#""text":"it broke""#) && sent.contains(r#""clientLog":"client lines""#) && sent.contains(r#""launcherLog":"launcher lines""#));
+    }
+
+    #[test]
     fn login_refusals_are_explained() {
         let (s, h) = serve_once("401 Unauthorized", r#"{"error":"BadCredentials"}"#);
-        assert_eq!(login(&s, "friend", "wrong").err(), Some("wrong account name or password".into()));
+        assert_eq!(login(&s, "friend", Cred::Password("wrong"), false).err(), Some("wrong account name or password".into()));
         h.join().unwrap();
         let (s, h) = serve_once("429 Too Many Requests", r#"{"error":"TooManyAttempts"}"#);
-        assert_eq!(login(&s, "friend", "wrong").err(), Some("too many tries: wait ten minutes".into()));
+        assert_eq!(login(&s, "friend", Cred::Password("wrong"), false).err(), Some("too many tries: wait ten minutes".into()));
         h.join().unwrap();
         let (s, h) = serve_once("404 Not Found", "");
-        assert_eq!(login(&s, "friend", "wrong").err(), Some("this server has no account API".into()));
+        assert_eq!(login(&s, "friend", Cred::Password("wrong"), false).err(), Some("this server has no account API".into()));
         h.join().unwrap();
     }
 
     #[test]
     fn a_ticket_in_another_form_is_refused() {
         let (s, h) = serve_once("200 OK", r#"{"username":"friend","ticket":"-L injected"}"#);
-        assert!(login(&s, "friend", "long enough").is_err());
+        assert!(login(&s, "friend", Cred::Password("long enough"), false).is_err());
         h.join().unwrap();
     }
 
     #[test]
     fn a_redirect_is_not_followed() {
         let (s, h) = serve_once("307 Temporary Redirect\r\nLocation: http://127.0.0.1:9/elsewhere", "");
-        assert!(login(&s, "friend", "long enough").is_err());
+        assert!(login(&s, "friend", Cred::Password("long enough"), false).is_err());
         h.join().unwrap();
     }
 
@@ -420,13 +504,13 @@ mod tests {
     #[test]
     fn a_transfer_carries_the_account_and_the_parts() {
         let (s, h) = serve_once("200 OK", r#"{"accepted":["gear","keybinds"]}"#);
-        let a = transfer(&s, "friend", "long enough", &serde_json::json!({"gear":"oqHS4M","uiData":{"2":"x"}})).unwrap();
+        let a = transfer(&s, "friend", Cred::Password("long enough"), &serde_json::json!({"gear":"oqHS4M","uiData":{"2":"x"}})).unwrap();
         assert_eq!(a.accepted, vec!["gear", "keybinds"]);
         let sent = h.join().unwrap();
         assert!(sent.starts_with("POST /api/transfer "));
         assert!(sent.contains(r#""gear":"oqHS4M""#) && sent.contains(r#""username":"friend""#));
         let (s, h) = serve_once("404 Not Found", "");
-        assert_eq!(transfer(&s, "a", "b", &serde_json::json!({})).err(), Some("this server does not take transfers yet".into()));
+        assert_eq!(transfer(&s, "a", Cred::Password("b"), &serde_json::json!({})).err(), Some("this server does not take transfers yet".into()));
         h.join().unwrap();
     }
 

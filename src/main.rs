@@ -4,6 +4,7 @@
 mod addons;
 mod cli;
 mod core;
+mod find;
 mod gui;
 mod install;
 mod ldb;
@@ -11,6 +12,7 @@ mod net;
 mod pak;
 mod recording;
 mod settings;
+mod signin;
 mod transfer;
 mod update;
 mod vault;

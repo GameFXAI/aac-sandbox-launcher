@@ -1,6 +1,47 @@
-# AAEmu sandbox launcher
+# AA Replay launcher
 
-Starts your own ArcheAge Classic client against an AAEmu server (local research), kept apart from AA Classic itself.
+Starts your own ArcheAge Classic client against an AA Replay server, kept apart from AA Classic itself. (The exe is
+still `aac-sandbox-launcher.exe` and its folder `%LOCALAPPDATA%\AAEmuSandbox`, so earlier installs keep working.)
+
+## A tester's first start
+
+1. The tester opens their invite link. The page has one download button: `AAReplaySetup-<invite code>.exe`, the same
+   installer for everyone, handed out under a name that carries that tester's code.
+2. The installer takes the code from its own file name (or `/INVITE=<code>`) and leaves it in
+   `%LOCALAPPDATA%\AAEmuSandbox\invite.txt`. It has one page (Install) and needs no administrator rights.
+3. The launcher opens on one screen: **Create your account**, name, password, **PLAY**. PLAY makes the account with
+   the invite, makes the game copy, signs in and starts the game.
+4. Once, after the first sign-in: "Bring your AA Classic settings?" (graphics and sound, interface options), with
+   **Bring them and play** / **Not now, just play**. Settings (the gear) can do it, or undo it, any time.
+
+Everything else (server, install mode, client builds, game download, bringing settings) is behind the gear.
+**Report a problem** (top bar) sends what the tester writes, plus the tail of `launcher.log` and the game's
+`ArcheAge.log` (long hex runs, such as sign-in tokens, are blanked), to the server's account API. When that fails,
+it saves the report as a file and opens its folder, so it can be sent by hand.
+
+The installer is not code-signed yet: Windows SmartScreen says "Windows protected your PC". **More info**, then
+**Run anyway**. The download page says so too.
+
+## Remembered sign-in
+
+"Remember me on this PC" (on by default) asks the server for a session token at sign-in. Only that token is kept, in
+`signin.bin`, sealed with Windows DPAPI for this Windows user; the password is never stored. Next time the window
+says "Welcome back" and PLAY needs no password. The server keeps only the token's SHA-256; a token lasts 30 days from
+its last use and 180 days at most, and an account has at most 5. "Not you? Sign out" ends the token on the server too.
+A token the server no longer takes (ran out, signed out everywhere, banned) is forgotten and the password is asked again.
+
+## Finding AA Classic
+
+Without a saved folder the launcher looks, in this order: the uninstall entries of AA Classic's installer (in all four
+registry views: id `{DEBDBBE9-230E-42C4-B44D-E0DC0CD81791}_is1`, or a name starting with "ArcheAge Classic"), XLGames'
+`setup_path`, then the usual folders on every drive. A folder counts only with `binNext\archeage.exe` and `game_pak`.
+Settings says how it was found; **FIND IT** picks one by hand.
+
+**AA Classic on another drive.** Standard mode shares `game_pak` through a hard link, which Windows only allows on one
+drive. So when AA Classic is on another drive than `%LOCALAPPDATA%`, the copy goes to `<that drive>\AAReplay\client`
+(still about 65 MB; `client-dir.txt` in the data folder points at it) and the window says so before PLAY. If that
+folder cannot be made, it says to use Full separation instead (a full copy, about 45 GB, on the launcher's own drive).
+Uninstall offers to remove that folder too.
 
 ## What it does
 
@@ -14,7 +55,8 @@ Starts your own ArcheAge Classic client against an AAEmu server (local research)
 - **Asks for this server's account only.** Never type your AA Classic password.
   - Server given as a link (`https://...`): the password goes to that server's account API and the client gets a one-time launch ticket. Plain `http://` is accepted only for this PC, and redirects are not followed, so the password never crosses the network in the clear.
   - Server given as a bare address (a development server): the client gets the username and the SHA-256 of the password.
-- **Sign-up in the window.** With a server link, "No account yet? Create one" asks for a name, a password and the invite code from the server's owner.
+- **Sign-up in the window.** With a server link and an invite from the installer, PLAY makes the account; without one, "Have an invite code? Create an account" asks for the code too.
+- **Readable by screen readers and UI Automation** (AccessKit): every button and field has a name, so the window can be driven without a mouse, for tests too.
 
 ## Use
 
@@ -97,14 +139,20 @@ cargo test
 ## Installer
 
 `installer\aac-sandbox-launcher.iss` is an Inno Setup 6 script: per user, no administrator rights, the launcher
-only (no game files). Uninstall removes the launcher; it asks before removing the data folder with the game copy.
+only (no game files). It keeps the first installer's AppId, so an AAEmu Sandbox Launcher 0.1.x install is upgraded in
+place (same folder, one uninstall entry, the old shortcuts replaced by "AA Replay"). Uninstall removes the launcher;
+it asks before removing the data folder with the game copy (and a copy on AA Classic's drive).
 
 ```
 cargo build --release
-iscc /DAppVersion=0.1.0 installer\aac-sandbox-launcher.iss
+iscc /DAppVersion=0.2.0 installer\aac-sandbox-launcher.iss     -> installer\out\AAReplaySetup.exe
 ```
 
-The script has not been compiled yet (Inno Setup is not on the development PC).
+The account API serves that file from `Accounts:DownloadsDir` as `/api/download/AAReplaySetup-<code>.exe`, and the
+invite page `/api/join/<code>` links to it (AA Replay server: `Tools/invites/new-invite.ps1`).
+
+Checked 2026-11-22 on the development PC (Inno Setup 6.7.3): a 0.1.1 install upgraded in place; the invite in the file
+name reached the launcher; first start to account, copy, remembered sign-in, settings offer, report and sign out.
 
 ## Licence
 
@@ -112,6 +160,6 @@ GPL-3.0, see `LICENSE`.
 
 ## Not built yet
 
-- Crash reports sent to our own receiver.
-- A compiled and tested installer; a host for the update manifest.
+- Crash reports sent to our own receiver (Report a problem sends the logs by hand).
+- Code signing (the installer and exe are unsigned: SmartScreen warns once).
 - Importing an action-bar layout from an existing profile.

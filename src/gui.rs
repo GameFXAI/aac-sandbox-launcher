@@ -1,10 +1,14 @@
 //! The launcher window: a game-launcher style screen with a backdrop painted in code.
 //! It deliberately uses no AA Classic logo or artwork, so it never passes for the official launcher.
 
-use crate::cli::default_aac_dir;
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{addons, install, settings, update, vault};
+use crate::{addons, find, install, settings, signin, transfer, update, vault};
+
+/// Is there an AA Classic profile on this PC to bring settings from?
+fn transfer_docs_present() -> bool {
+    transfer::real_docs().is_some()
+}
 use eframe::egui::{
     self, Align, Align2, Color32, FontData, FontFamily, FontId, Layout, Margin, Painter, Pos2, Rect, RichText, Sense,
     Shape, Stroke, TextEdit, UiBuilder, Vec2, ViewportCommand, pos2, vec2,
@@ -259,6 +263,7 @@ fn nav_tab(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(label.to_uppercase(), font.clone(), INK);
     let size = vec2(galley.size().x + 28.0, 52.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
     let color = if selected {
         GOLD
     } else if resp.hovered() {
@@ -283,6 +288,11 @@ enum WinBtn {
 
 fn win_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(44.0, 52.0), Sense::click());
+    let name = match kind {
+        WinBtn::Close => "Close",
+        WinBtn::Minimize => "Minimize",
+    };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
     let p = ui.painter();
     if resp.hovered() {
         let bg = match kind {
@@ -305,9 +315,34 @@ fn win_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
     resp
 }
 
+/// The gear in the top bar: Settings and everything that is not Play.
+fn gear_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(46.0, 52.0), Sense::click());
+    let p = ui.painter();
+    if resp.hovered() {
+        p.rect_filled(rect, 0.0, rgba(255, 255, 255, 18));
+    }
+    let c = rect.center();
+    let col = if open { GOLD } else if resp.hovered() { INK } else { MUTED };
+    let teeth = 8;
+    let mut pts = Vec::new();
+    for i in 0..teeth * 4 {
+        let a = i as f32 / (teeth * 4) as f32 * std::f32::consts::TAU;
+        let r = if (i / 2) % 2 == 0 { 10.5 } else { 8.0 };
+        pts.push(c + vec2(a.cos() * r, a.sin() * r));
+    }
+    p.add(Shape::closed_line(pts, Stroke::new(1.6, col)));
+    p.circle_stroke(c, 3.6, Stroke::new(1.6, col));
+    if open {
+        p.line_segment([pos2(rect.left() + 10.0, rect.bottom() - 2.0), pos2(rect.right() - 10.0, rect.bottom() - 2.0)], Stroke::new(2.0, GOLD));
+    }
+    resp
+}
+
 /// The big gold button (play / install / update).
 fn big_button(ui: &mut egui::Ui, size: Vec2, label: &str, enabled: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     let p = ui.painter();
     let hov = enabled && resp.hovered();
     if enabled {
@@ -333,7 +368,7 @@ fn big_button(ui: &mut egui::Ui, size: Vec2, label: &str, enabled: bool) -> egui
 
 /// Text field with a small caption above it.
 fn field(ui: &mut egui::Ui, caption: &str, value: &mut String, password: bool, hint: &str) -> egui::Response {
-    ui.label(RichText::new(caption.to_uppercase()).size(11.5).color(MUTED).extra_letter_spacing(1.2));
+    let label = ui.label(RichText::new(caption.to_uppercase()).size(11.5).color(MUTED).extra_letter_spacing(1.2));
     let r = ui.add(
         TextEdit::singleline(value)
             .password(password)
@@ -341,7 +376,8 @@ fn field(ui: &mut egui::Ui, caption: &str, value: &mut String, password: bool, h
             .desired_width(f32::INFINITY)
             .margin(Margin::symmetric(10, 8))
             .font(FontId::proportional(15.5)),
-    );
+    )
+    .labelled_by(label.id);
     ui.add_space(4.0);
     r
 }
@@ -370,6 +406,7 @@ fn tick_row(ui: &mut egui::Ui, title: &str, detail: &str) {
 /// Selectable card for an install mode.
 fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, title: &str, size: &str, detail: &str) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 104.0), if enabled { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, enabled, selected, title));
     let p = ui.painter();
     let edge = if selected {
         Stroke::new(1.5, GOLD)
@@ -400,8 +437,10 @@ fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, title
 enum Msg {
     Line(String),
     SetupDone(Result<(), String>),
-    /// the account API's answer to a login: account name and launch ticket
-    Ticket(Result<(String, String), String>),
+    /// the account API's answer to a login: account name, launch ticket and (with "remember me") the sign-in
+    Ticket(Result<(String, String, Option<String>), String>),
+    /// "Report a problem" was sent (its id) or not
+    Reported(Result<String, String>),
     SignedUp(Result<String, String>),
     Progress(f32),
     /// Install game ended: game data version and client build
@@ -427,7 +466,6 @@ enum Tab {
 }
 
 enum Action {
-    Setup,
     /// Install game: the launcher's own download
     Install,
     Stop,
@@ -445,6 +483,64 @@ enum Action {
     OpenTransfer,
     Transfer,
     UndoTransfer,
+    /// the "Report a problem" dialog opens
+    Report,
+    SendReport,
+    SignOut,
+    /// the first start's offer: bring AA Classic's settings, then play
+    BringSettings,
+    /// the first start's offer: play without them
+    SkipOffer,
+}
+
+/// What a sign-in proves the account with, kept only in memory (the password) or sealed on disk (the token).
+#[derive(Clone)]
+pub enum Secret {
+    Password(String),
+    Session(String),
+}
+
+impl Secret {
+    pub fn cred(&self) -> net::Cred<'_> {
+        match self {
+            Secret::Password(p) => net::Cred::Password(p),
+            Secret::Session(s) => net::Cred::Session(s),
+        }
+    }
+}
+
+/// The "Report a problem" dialog.
+#[derive(Default)]
+struct ReportForm {
+    text: String,
+    logs: bool,
+    sending: bool,
+    /// the outcome: Ok(what to tell the player) or Err(what went wrong)
+    done: Option<Result<String, String>>,
+}
+
+/// The last `max` bytes of a text file, with anything that looks like a ticket or a sign-in (64 hex) blanked.
+fn log_tail(path: &std::path::Path, max: usize) -> String {
+    let Ok(b) = std::fs::read(path) else { return String::new() };
+    let from = b.len().saturating_sub(max);
+    let text = String::from_utf8_lossy(&b[from..]).to_string();
+    let mut out = String::with_capacity(text.len());
+    let mut run = String::new();
+    for c in text.chars().chain(Some('\n')) {
+        if c.is_ascii_hexdigit() {
+            run.push(c);
+            continue;
+        }
+        if run.len() >= 64 {
+            out.push_str("<hidden>");
+        } else {
+            out.push_str(&run);
+        }
+        run.clear();
+        out.push(c);
+    }
+    out.pop();
+    out
 }
 
 struct App {
@@ -477,6 +573,19 @@ struct App {
     server_up: Option<Result<String, String>>,
     /// the sign-in card shows the server address field
     edit_server: bool,
+    /// keep the sign-in on this PC (the server's token, never the password)
+    remember: bool,
+    /// the remembered sign-in for this server, if any
+    saved: Option<signin::Saved>,
+    /// the invite the installer left (read from the setup file's name): the first PLAY makes the account with it
+    baked_invite: Option<String>,
+    /// the first start's "bring your AA Classic settings" card is up
+    offer: bool,
+    /// the game starts when the transfer that is running ends
+    play_after_transfer: bool,
+    report: Option<ReportForm>,
+    /// how the AA Classic folder was found, for Settings
+    aac_how: Option<&'static str>,
 }
 
 impl App {
@@ -485,22 +594,25 @@ impl App {
         install_style(&cc.egui_ctx);
         let paths = Paths::new();
         let mut cfg = Config::load(&paths);
-        if cfg.aac_dir.is_none() {
-            cfg.aac_dir = default_aac_dir();
-            // a PC without AA Classic: the launcher downloads the game itself
-            if cfg.aac_dir.is_none() && !paths.exe().is_file() {
-                cfg.mode = Mode::Own;
+        let mut aac_how = None;
+        if cfg.aac_dir.as_ref().is_none_or(|d| !find::is_aac(d)) {
+            // the registry first, then the usual folders on every drive (find.rs)
+            if let Some(h) = find::aac() {
+                cfg.aac_dir = Some(h.dir);
+                aac_how = Some(h.how);
+                let _ = cfg.save(&paths);
             }
         }
         let (tx, rx) = channel();
-        let first_start = cfg.username.trim().is_empty();
+        let saved = signin::load(&paths).filter(|s| s.server == cfg.login_ip.trim());
+        let baked_invite = signin::pending_invite(&paths);
         let mut a = App {
             paths,
             cfg,
             password: String::new(),
             invite: String::new(),
-            // a first start (no account remembered) opens on Create account: a friend arrives with an invite code
-            signup: std::env::var("AAEMU_SANDBOX_SIGNUP").is_ok() || first_start,
+            // with the invite from the download and no sign-in yet, the first PLAY makes the account
+            signup: std::env::var("AAEMU_SANDBOX_SIGNUP").is_ok() || (baked_invite.is_some() && saved.is_none()),
             asking: false,
             log: vec![],
             busy: false,
@@ -523,9 +635,23 @@ impl App {
             hint: None,
             server_up: None,
             edit_server: false,
+            remember: true,
+            saved,
+            baked_invite,
+            offer: false,
+            play_after_transfer: false,
+            report: None,
+            aac_how,
         };
+        if let Some(s) = &a.saved {
+            a.cfg.username = s.username.clone();
+        }
         a.check_server();
         a.refresh();
+        // the first start offers to bring AA Classic's settings: look at them now, off the window's thread
+        if !a.cfg.transfer_offered && transfer_docs_present() {
+            a.rescan();
+        }
         if std::env::var("AAEMU_SANDBOX_TAB").as_deref() == Ok("transfer") {
             a.open_transfer();
         }
@@ -542,7 +668,7 @@ impl App {
     }
 
     fn aac(&self) -> Result<AacInstall, String> {
-        let d = self.cfg.aac_dir.clone().ok_or("choose your AA Classic folder in Settings")?;
+        let d = self.cfg.aac_dir.clone().ok_or("The launcher looked in Windows' list of programs and on every drive. Show it the folder AA Classic is installed in (the one with binNext and game_pak).")?;
         AacInstall::open(&d, &self.paths)
     }
 
@@ -645,6 +771,12 @@ impl App {
             Err(e) => return self.say(e),
         };
         let _ = self.cfg.save(&self.paths);
+        // AA Classic on another drive: our copy goes to that drive, so its game data can still be linked
+        match place_client(&mut self.paths, &aac, self.cfg.mode) {
+            Ok(Some(line)) => self.say(line),
+            Ok(None) => {}
+            Err(e) => return self.warn(e),
+        }
         self.busy = true;
         self.progress = None;
         let (paths, mode, tx) = (self.paths.clone(), self.cfg.mode, self.tx.clone());
@@ -657,25 +789,58 @@ impl App {
         });
     }
 
+    /// The account name and what proves it: the remembered sign-in, else the password typed now.
+    pub(super) fn secret(&self) -> Option<(String, Secret)> {
+        if let Some(s) = &self.saved {
+            return Some((s.username.clone(), Secret::Session(s.session.clone())));
+        }
+        let u = self.cfg.username.trim();
+        (!u.is_empty() && !self.password.is_empty()).then(|| (u.to_string(), Secret::Password(self.password.clone())))
+    }
+
+    /// The one button: makes the account (first start with an invite), makes or refreshes our copy of the game,
+    /// signs in and starts the game, each step going on to the next.
+    pub(super) fn press_play(&mut self) {
+        if self.signup {
+            return self.start_signup();
+        }
+        if self.secret().is_none() {
+            return self.warn("Enter your account name and password on the right.");
+        }
+        match &self.state {
+            Ok(State::Ready) => self.start_play(),
+            Ok(_) if self.cfg.mode == Mode::Own => self.warn("Install the game first (Settings)."),
+            Ok(_) => self.start_setup(),
+            Err(e) => {
+                let e = e.clone();
+                self.warn(e)
+            }
+        }
+    }
+
     fn start_play(&mut self) {
+        // before signing in: a ticket is only good for two minutes
+        let running = crate::core::blocking_processes();
+        if !running.is_empty() {
+            return self.warn(format!("Close AA Classic first (its game or launcher is still open: {}). Both can't run at once.", running.join(", ")));
+        }
         let aac = match self.aac_if_needed() {
             Ok(a) => a,
             Err(e) => return self.warn(e),
         };
-        if self.cfg.username.trim().is_empty() || self.password.is_empty() {
+        let Some((username, secret)) = self.secret() else {
             return self.warn("Enter your account name and password on the right.");
-        }
+        };
         let server = match Server::parse(&self.cfg.login_ip) {
             Ok(s) => s,
             Err(e) => return self.warn(e),
         };
         let _ = self.cfg.save(&self.paths);
-        let username = self.cfg.username.trim().to_string();
         if let Server::Api { .. } = server {
             // the password is checked by the server's account API; the client only ever gets a one-time ticket
             self.asking = true;
             self.say("Signing in…");
-            let (tx, password, paths) = (self.tx.clone(), self.password.clone(), self.paths.clone());
+            let (tx, paths, remember) = (self.tx.clone(), self.paths.clone(), self.remember && self.saved.is_none());
             std::thread::spawn(move || {
                 // the server's addons first: a ticket is only good for two minutes
                 match addons::ensure(&paths, &server) {
@@ -688,12 +853,67 @@ impl App {
                         return;
                     }
                 }
-                let _ = tx.send(Msg::Ticket(net::login(&server, &username, &password).map(|t| (t.username, t.ticket))));
+                let _ = tx.send(Msg::Ticket(net::login(&server, &username, secret.cred(), remember).map(|t| (t.username, t.ticket, t.session))));
             });
             return;
         }
         let token = token_from_password(&self.password);
         self.launch(aac, username, token);
+    }
+
+    /// Is there an AA Classic profile on this PC to bring settings from? (Only then is the first start's offer made.)
+    fn offer_ready(&self) -> bool {
+        self.xfer.items().iter().any(|i| i.ready)
+    }
+
+    fn sign_out(&mut self) {
+        if let Some(s) = self.saved.take() {
+            // ends the token on the server too; the file goes either way
+            if let Ok(server @ Server::Api { .. }) = Server::parse(&s.server) {
+                std::thread::spawn(move || {
+                    let _ = net::logout(&server, &s.session);
+                });
+            }
+        }
+        signin::forget(&self.paths);
+        self.password.clear();
+        self.say("Signed out on this PC");
+    }
+
+    fn send_report(&mut self) {
+        let Some(form) = self.report.as_mut() else { return };
+        if form.sending {
+            return;
+        }
+        form.sending = true;
+        form.done = None;
+        let (text, logs) = (form.text.trim().to_string(), form.logs);
+        let launcher_log = if logs { log_tail(&self.paths.log_file(), 200 * 1024) } else { String::new() };
+        let client_log = if logs { log_tail(&self.paths.docs().join("ArcheAge.log"), 200 * 1024) } else { String::new() };
+        let user = self.secret().map(|(u, _)| u).unwrap_or_else(|| self.cfg.username.trim().to_string());
+        let session = self.saved.as_ref().map(|s| s.session.clone());
+        let (tx, paths, server) = (self.tx.clone(), self.paths.clone(), Server::parse(&self.cfg.login_ip));
+        std::thread::spawn(move || {
+            let sent = match &server {
+                Ok(s @ Server::Api { .. }) => net::report(s, &user, session.as_deref(), &text, &launcher_log, &client_log),
+                _ => Err("this server takes no reports".into()),
+            };
+            // not sent: the same report as a file the player can hand on
+            let r = sent.map(|id| format!("Sent. Thank you! (report {id})")).or_else(|e| {
+                let dir = paths.root.join("reports");
+                let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let file = dir.join(format!("report-{t}.txt"));
+                let body = format!("AA Replay launcher {}\r\naccount: {user}\r\n\r\n{text}\r\n\r\n--- launcher log ---\r\n{launcher_log}\r\n\r\n--- game log ---\r\n{client_log}\r\n", update::VERSION);
+                match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, body)) {
+                    Ok(()) => {
+                        let _ = std::process::Command::new("explorer").arg("/select,").arg(&file).spawn();
+                        Err(format!("Could not send it ({e}). It is saved as {}: send that file to whoever invited you.", file.display()))
+                    }
+                    Err(w) => Err(format!("Could not send it ({e}) or save it ({w})")),
+                }
+            });
+            let _ = tx.send(Msg::Reported(r));
+        });
     }
 
     fn start_signup(&mut self) {
@@ -704,12 +924,13 @@ impl App {
         if self.cfg.username.trim().is_empty() || self.password.is_empty() {
             return self.warn("Choose an account name and a password.");
         }
-        if self.invite.trim().is_empty() {
+        let invite = self.baked_invite.clone().unwrap_or_else(|| self.invite.trim().to_string());
+        if invite.is_empty() {
             return self.warn("Enter the invite code you were given.");
         }
         self.asking = true;
         self.say("Creating your account…");
-        let (tx, username, password, invite) = (self.tx.clone(), self.cfg.username.trim().to_string(), self.password.clone(), self.invite.clone());
+        let (tx, username, password) = (self.tx.clone(), self.cfg.username.trim().to_string(), self.password.clone());
         std::thread::spawn(move || {
             let _ = tx.send(Msg::SignedUp(net::signup(&server, &username, &password, &invite)));
         });
@@ -758,7 +979,6 @@ impl App {
     fn run(&mut self, a: Action) {
         self.hint = None;
         match a {
-            Action::Setup => self.start_setup(),
             Action::Install => self.start_install(),
             Action::Stop => {
                 self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -783,8 +1003,32 @@ impl App {
             }
             Action::ImportPack => self.import_pack(),
             Action::ExportPack => self.export_pack(),
-            Action::Play => self.start_play(),
+            Action::Play => self.press_play(),
             Action::SignUp => self.start_signup(),
+            Action::Report => {
+                self.report = Some(ReportForm { logs: true, ..Default::default() });
+            }
+            Action::SendReport => self.send_report(),
+            Action::SignOut => self.sign_out(),
+            Action::BringSettings => {
+                self.offer = false;
+                self.cfg.transfer_offered = true;
+                let _ = self.cfg.save(&self.paths);
+                self.retick_all();
+                self.play_after_transfer = true;
+                self.start_transfer();
+                if !self.xfer.working {
+                    // nothing could be moved after all: play
+                    self.play_after_transfer = false;
+                    self.press_play();
+                }
+            }
+            Action::SkipOffer => {
+                self.offer = false;
+                self.cfg.transfer_offered = true;
+                let _ = self.cfg.save(&self.paths);
+                self.press_play();
+            }
             Action::ChooseFolder => {
                 if let Some(d) = rfd::FileDialog::new().set_title("Your AA Classic folder (the one with binNext and game_pak)").pick_folder() {
                     self.cfg.aac_dir = Some(d);
@@ -820,7 +1064,14 @@ impl App {
             Action::OpenFolder => {
                 let _ = std::process::Command::new("explorer").arg(&self.paths.root).spawn();
             }
-            Action::OpenTransfer => self.open_transfer(),
+            Action::OpenTransfer => {
+                if self.offer {
+                    self.offer = false;
+                    self.cfg.transfer_offered = true;
+                    let _ = self.cfg.save(&self.paths);
+                }
+                self.open_transfer()
+            }
             Action::Transfer => self.start_transfer(),
             Action::UndoTransfer => self.start_undo(),
         }
@@ -838,13 +1089,47 @@ impl App {
                 Msg::Ticket(r) => {
                     self.asking = false;
                     match (r, self.aac_if_needed()) {
-                        (Ok((name, ticket)), Ok(aac)) => {
+                        (Ok((name, ticket, session)), Ok(aac)) => {
                             self.cfg.username = name.clone();
                             let _ = self.cfg.save(&self.paths);
-                            self.launch(aac, name, ticket);
+                            if let Some(session) = session {
+                                let s = signin::Saved { server: self.cfg.login_ip.trim().to_string(), username: name.clone(), session };
+                                match signin::save(&self.paths, &s) {
+                                    Ok(()) => {
+                                        self.say(format!("Signed in as {name}: remembered on this PC (the password is not kept)"));
+                                        self.saved = Some(s);
+                                        self.password.clear();
+                                    }
+                                    Err(e) => self.say(e),
+                                }
+                            }
+                            // the first start: offer AA Classic's settings before the game starts (the ticket is
+                            // left to run out; the next press asks for a fresh one)
+                            if !self.cfg.transfer_offered && self.offer_ready() && self.secret().is_some() {
+                                self.offer = true;
+                                self.tab = Tab::Play;
+                            } else {
+                                self.launch(aac, name, ticket);
+                            }
                         }
-                        (Err(e), _) | (_, Err(e)) => self.warn(format!("Sign-in failed: {e}")),
+                        (Err(e), _) | (_, Err(e)) => {
+                            if e == net::explain("BadSession") {
+                                // the remembered sign-in ran out or was ended: the password once more
+                                self.saved = None;
+                                signin::forget(&self.paths);
+                            }
+                            self.warn(format!("Sign-in failed: {e}"))
+                        }
                     }
+                }
+                Msg::Reported(r) => {
+                    if let Some(f) = self.report.as_mut() {
+                        f.sending = false;
+                        f.done = Some(r.clone());
+                    }
+                    self.say(match r {
+                        Ok(l) | Err(l) => format!("report: {l}"),
+                    });
                 }
                 Msg::SignedUp(r) => {
                     self.asking = false;
@@ -854,7 +1139,19 @@ impl App {
                             let _ = self.cfg.save(&self.paths);
                             self.signup = false;
                             self.invite.clear();
-                            self.say(format!("Account {name} created: press Play"));
+                            self.baked_invite = None;
+                            signin::clear_invite(&self.paths);
+                            self.say(format!("Account {name} created"));
+                            // one press: the account, then the game
+                            self.press_play();
+                        }
+                        // the invite of a second install was used up by the first: the account is there, sign in
+                        Err(e) if self.baked_invite.is_some() && (e == net::explain("BadInvite") || e == net::explain("UsernameTaken")) => {
+                            self.baked_invite = None;
+                            signin::clear_invite(&self.paths);
+                            self.signup = false;
+                            self.say(format!("{e}: signing in to the account instead"));
+                            self.press_play();
                         }
                         Err(e) => self.warn(format!("Could not create the account: {e}")),
                     }
@@ -908,7 +1205,7 @@ impl App {
                         Ok(()) => {
                             self.say("Your copy of the game is ready");
                             // one press: with an account filled in, Install goes on to Play
-                            if !self.signup && !self.cfg.username.trim().is_empty() && !self.password.is_empty() {
+                            if !self.signup && self.secret().is_some() {
                                 self.refresh();
                                 if matches!(self.state, Ok(State::Ready)) {
                                     self.start_play();
@@ -931,7 +1228,8 @@ impl App {
                 }
             }
         }
-        if self.busy || self.asking || self.child.is_some() || self.confirm.is_some() || self.xfer.working || self.xfer.scanning || self.xfer.fetching.is_some() {
+        let reporting = self.report.as_ref().is_some_and(|r| r.sending);
+        if self.busy || self.asking || reporting || self.child.is_some() || self.confirm.is_some() || self.xfer.working || self.xfer.scanning || self.xfer.fetching.is_some() {
             ctx.request_repaint_after(Duration::from_millis(400));
         }
     }
@@ -958,13 +1256,9 @@ impl App {
         let tabs = Rect::from_min_max(pos2(sb.right() + 40.0, rect.top()), rect.max);
         ui.scope_builder(UiBuilder::new().max_rect(tabs).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (t, name) in [(Tab::Play, "Play"), (Tab::Transfer, "Transfer"), (Tab::Settings, "Settings")] {
-                if nav_tab(ui, name, self.tab == t || (t == Tab::Settings && self.tab == Tab::Log)).clicked() {
-                    if t == Tab::Transfer && self.tab != Tab::Transfer {
-                        *act = Some(Action::OpenTransfer);
-                    }
-                    self.tab = t;
-                }
+            // one screen: everything else is behind the gear, and the gear (or Back) brings you back
+            if self.tab != Tab::Play && nav_tab(ui, "‹  Back", false).clicked() {
+                self.tab = Tab::Play;
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if win_button(ui, WinBtn::Close).clicked() {
@@ -972,6 +1266,14 @@ impl App {
                 }
                 if win_button(ui, WinBtn::Minimize).clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+                }
+                let open = self.tab != Tab::Play;
+                if gear_button(ui, open).on_hover_text(if open { "Back to Play" } else { "Settings" }).clicked() {
+                    self.tab = if open { Tab::Play } else { Tab::Settings };
+                }
+                ui.add_space(8.0);
+                if ui.add(egui::Button::new(RichText::new("Report a problem").size(13.0).color(INK))).on_hover_text("Tell us what went wrong. The launcher's and the game's logs go with it (no password is in them).").clicked() {
+                    *act = Some(Action::Report);
                 }
                 if let Some(r) = &self.update {
                     ui.add_space(10.0);
@@ -1002,21 +1304,33 @@ impl App {
             tick_row(ui, "Any build, in seconds", "Wear a DaruGear build or a class setup. Dying costs nothing.");
             tick_row(ui, "Every fight recorded", "Watch it back in the game: pause, slow it down, see every hit.");
             tick_row(ui, "Kept apart from AA Classic", "Own copy, own folder, own account. AA Classic is never changed.");
-            ui.add_space(12.0);
-            if transfer_ui::transfer_button(ui, 430.0).clicked() {
-                *act = Some(Action::OpenTransfer);
-            }
         });
+        if self.offer {
+            return self.offer_card(ui, body, act);
+        }
 
         // right: sign in
         let w = 360.0;
-        let tall = if self.signup { 470.0 } else { 404.0 } + if self.edit_server { 66.0 } else { 0.0 };
+        let tall = if self.saved.is_some() {
+            250.0
+        } else {
+            (if self.signup && self.baked_invite.is_none() { 482.0 } else { 416.0 }) + if self.edit_server { 66.0 } else { 0.0 }
+        };
         let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 36.0), vec2(w, tall));
         card(ui.painter(), cardr);
         let mut enter = false;
         ui.scope_builder(UiBuilder::new().max_rect(cardr.shrink2(vec2(28.0, 24.0))).layout(Layout::top_down(Align::Min)), |ui| {
-            ui.label(RichText::new(if self.signup { "Create account" } else { "Sign in" }).font(title_font(26.0)).color(INK));
-            ui.label(RichText::new(if self.signup { "Pick a name and a password, and enter the invite code you were given." } else { "Your AA Replay account, not your AA Classic one." }).size(13.0).color(MUTED));
+            let (title, sub) = if self.saved.is_some() {
+                ("Welcome back", "You stay signed in on this PC. Press Play.")
+            } else if self.signup && self.baked_invite.is_some() {
+                ("Create your account", "Your invite is already in. Pick a name and a password for this test.")
+            } else if self.signup {
+                ("Create account", "Pick a name and a password, and enter the invite code you were given.")
+            } else {
+                ("Sign in", "Your AA Replay account, not your AA Classic one.")
+            };
+            ui.label(RichText::new(title).font(title_font(26.0)).color(INK));
+            ui.label(RichText::new(sub).size(13.0).color(MUTED));
             ui.add_space(8.0);
             // the server: a status line; the address only when someone asks to change it
             ui.horizontal(|ui| {
@@ -1051,12 +1365,24 @@ impl App {
                     self.check_server();
                 }
             }
-            field(ui, "Account", &mut self.cfg.username, false, "account name");
+            if let Some(s) = &self.saved {
+                ui.add_space(6.0);
+                ui.label(RichText::new("SIGNED IN AS").size(11.5).color(MUTED).extra_letter_spacing(1.2));
+                ui.label(RichText::new(s.username.as_str()).font(bold_font(20.0)).color(INK));
+                ui.add_space(8.0);
+                if ui.add(egui::Label::new(RichText::new("Not you? Sign out").size(13.0).color(BLUE).underline()).sense(Sense::click())).clicked() {
+                    *act = Some(Action::SignOut);
+                }
+                return;
+            }
+            field(ui, "Name", &mut self.cfg.username, false, "account name");
             let pw = field(ui, "Password", &mut self.password, true, "password for this server");
             if pw.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 enter = true;
             }
-            if self.signup {
+            ui.checkbox(&mut self.remember, RichText::new("Remember me on this PC").size(13.5).color(INK))
+                .on_hover_text("Keeps a sign-in from the server, sealed for your Windows user. Your password is never stored.");
+            if self.signup && self.baked_invite.is_none() {
                 let inv = field(ui, "Invite code", &mut self.invite, false, "from the server's owner");
                 if inv.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     enter = true;
@@ -1071,7 +1397,7 @@ impl App {
             ui.add_space(4.0);
             // accounts are made on a server with an account API (a link), not on a bare address
             if matches!(Server::parse(&self.cfg.login_ip), Ok(Server::Api { .. })) {
-                let label = if self.signup { "I already have an account" } else { "No account yet? Create one" };
+                let label = if self.signup { "I already have an account" } else { "Have an invite code? Create an account" };
                 if ui.add(egui::Label::new(RichText::new(label).size(13.0).color(BLUE).underline()).sense(Sense::click())).clicked() {
                     self.signup = !self.signup;
                 }
@@ -1079,10 +1405,101 @@ impl App {
                 self.signup = false;
             }
         });
-        if enter && self.signup && !self.asking {
-            *act = Some(Action::SignUp);
-        } else if enter && matches!(self.state, Ok(State::Ready)) && !self.busy && !self.asking && self.child.is_none() {
+        if enter && !self.busy && !self.asking && self.child.is_none() {
             *act = Some(Action::Play);
+        }
+    }
+
+    /// The first start's one-time offer: AA Classic's settings into this client, then the game.
+    fn offer_card(&mut self, ui: &mut egui::Ui, body: Rect, act: &mut Option<Action>) {
+        let w = 400.0;
+        let ready: Vec<transfer::Item> = self.xfer.items().into_iter().filter(|i| i.ready).collect();
+        let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 36.0), vec2(w, 200.0 + ready.len() as f32 * 48.0));
+        card(ui.painter(), cardr);
+        ui.scope_builder(UiBuilder::new().max_rect(cardr.shrink2(vec2(28.0, 24.0))).layout(Layout::top_down(Align::Min)), |ui| {
+            ui.label(RichText::new("Bring your AA Classic settings?").font(title_font(24.0)).color(INK));
+            ui.label(RichText::new("Once, before your first game. AA Classic's files are only read, and Settings can undo it.").size(13.0).color(MUTED));
+            ui.add_space(8.0);
+            for it in &ready {
+                // a painted tick (the fonts have no check mark), the title, and its summary on one cut-off line
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+                    let (p, c) = (ui.painter(), rect.center());
+                    p.line_segment([c + vec2(-5.0, 0.0), c + vec2(-1.5, 3.5)], Stroke::new(1.8, GREEN));
+                    p.line_segment([c + vec2(-1.5, 3.5), c + vec2(5.5, -4.0)], Stroke::new(1.8, GREEN));
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(RichText::new(it.title).font(bold_font(14.5)).color(INK));
+                        ui.add(egui::Label::new(RichText::new(&it.summary).size(12.5).color(MUTED)).truncate());
+                    });
+                });
+                ui.add_space(4.0);
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(RichText::new("Bring them and play").font(bold_font(15.0)).color(DARK_TEXT)).fill(GOLD)).clicked() {
+                    *act = Some(Action::BringSettings);
+                }
+                if ui.button("Not now, just play").clicked() {
+                    *act = Some(Action::SkipOffer);
+                }
+            });
+            ui.add_space(4.0);
+            if ui.add(egui::Label::new(RichText::new("Choose what to bring…").size(12.5).color(BLUE).underline()).sense(Sense::click())).clicked() {
+                *act = Some(Action::OpenTransfer);
+            }
+        });
+    }
+
+    /// The "Report a problem" dialog, over everything else.
+    fn report_dialog(&mut self, ctx: &egui::Context, act: &mut Option<Action>) {
+        let Some(form) = self.report.as_mut() else { return };
+        let mut close = false;
+        egui::Area::new(egui::Id::NULL.with("report")).order(egui::Order::Foreground).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            let r = Rect::from_center_size(ctx.content_rect().center(), vec2(520.0, 360.0));
+            ui.painter().rect_filled(ctx.content_rect(), 0.0, rgba(0, 0, 0, 150));
+            // the dimmed backdrop takes the clicks, so nothing behind the dialog can be pressed
+            let _ = ui.interact(ctx.content_rect(), ui.scope_id().with("backdrop"), Sense::click_and_drag());
+            card(ui.painter(), r);
+            ui.scope_builder(UiBuilder::new().max_rect(r.shrink2(vec2(28.0, 22.0))).layout(Layout::top_down(Align::Min)), |ui| {
+                ui.label(RichText::new("Report a problem").font(title_font(24.0)).color(INK));
+                let ask = ui.label(RichText::new("What happened, and what were you doing? It goes to the people running the test.").size(13.0).color(MUTED));
+                ui.add_space(6.0);
+                ui.add(TextEdit::multiline(&mut form.text).desired_rows(6).desired_width(f32::INFINITY).hint_text("e.g. the game closed when I entered the arena"))
+                    .labelled_by(ask.id);
+                ui.checkbox(&mut form.logs, RichText::new("Include the launcher's log and the game's log").size(13.0).color(INK))
+                    .on_hover_text("launcher.log and ArcheAge.log from this launcher's own folder. Sign-in tokens in them are blanked; no password is ever in them.");
+                ui.add_space(6.0);
+                match &form.done {
+                    Some(Ok(t)) => {
+                        ui.label(RichText::new(t.as_str()).color(GREEN));
+                    }
+                    Some(Err(e)) => {
+                        ui.add(egui::Label::new(RichText::new(e.as_str()).size(12.5).color(AMBER)).wrap());
+                    }
+                    None if form.sending => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new("Sending…").color(MUTED));
+                        });
+                    }
+                    None => {}
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let sent = matches!(form.done, Some(Ok(_)));
+                    let can = !form.sending && !sent && (!form.text.trim().is_empty() || form.logs);
+                    if ui.add_enabled(can, egui::Button::new(RichText::new("Send").font(bold_font(15.0)).color(DARK_TEXT)).fill(GOLD)).clicked() {
+                        *act = Some(Action::SendReport);
+                    }
+                    if ui.add_enabled(!form.sending, egui::Button::new(if sent { "Close" } else { "Cancel" })).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+        if close {
+            self.report = None;
         }
     }
 
@@ -1098,7 +1515,46 @@ impl App {
                     ui.label(RichText::new(format!("Launcher {}", update::VERSION)).size(12.0).color(MUTED));
                 });
             });
-            ui.add_space(8.0);
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_width(inner.width() - 12.0);
+
+            ui.label(RichText::new("ACCOUNT").size(11.5).color(MUTED).extra_letter_spacing(1.2));
+            ui.horizontal(|ui| {
+                match &self.saved {
+                    Some(s) => {
+                        ui.label(RichText::new(format!("Signed in as {} (remembered on this PC; the password is not kept)", s.username)).color(INK));
+                        if ui.button("Sign out").clicked() {
+                            *act = Some(Action::SignOut);
+                        }
+                    }
+                    None => {
+                        ui.label(RichText::new("Not remembered on this PC: Play asks for the password.").color(INK));
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Server").size(13.0).color(MUTED));
+                let r = ui.add(TextEdit::singleline(&mut self.cfg.login_ip).desired_width(380.0).hint_text("https://... or 127.0.0.1"));
+                if r.changed() {
+                    self.cfg.game_ip = self.cfg.login_ip.clone();
+                }
+                if r.lost_focus() {
+                    let _ = self.cfg.save(&self.paths);
+                    self.saved = signin::load(&self.paths).filter(|s| s.server == self.cfg.login_ip.trim());
+                    self.check_server();
+                }
+            });
+            ui.add_space(6.0);
+
+            ui.label(RichText::new("FROM AA CLASSIC").size(11.5).color(MUTED).extra_letter_spacing(1.2));
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!locked, egui::Button::new("Bring my AA Classic settings…")).on_hover_text("Display, interface, keybinds, bars and gear: tick what comes over. Undo is on the same screen.").clicked() {
+                    *act = Some(Action::OpenTransfer);
+                }
+                ui.label(RichText::new("Settings, keybinds, interface, bars and gear. AA Classic's files are only read.").size(12.5).color(MUTED));
+            });
+            ui.add_space(6.0);
 
             ui.label(RichText::new("AA CLASSIC FOLDER").size(11.5).color(MUTED).extra_letter_spacing(1.2));
             ui.horizontal(|ui| {
@@ -1111,6 +1567,15 @@ impl App {
                     *act = Some(Action::ChooseFolder);
                 }
             });
+            if let Some(d) = &self.cfg.aac_dir {
+                if let Some(how) = self.aac_how {
+                    ui.label(RichText::new(format!("Found through {how}.")).size(12.5).color(MUTED));
+                }
+                if self.cfg.mode == Mode::Standard {
+                    let note = find::place_note(&self.paths.root, &self.paths.client(), d);
+                    ui.add(egui::Label::new(RichText::new(note).size(12.5).color(INK)).wrap());
+                }
+            }
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Only binNext and game_pak are read. Nothing in this folder is ever written.").size(12.5).color(MUTED));
                 let hint = "Takes your display, quality and sound settings from AA Classic's system.cfg into this client's own. That file is only read. No server address, language or account data is taken.";
@@ -1175,6 +1640,7 @@ impl App {
                     *act = Some(Action::RemoveAll);
                 }
             });
+            });
         });
     }
 
@@ -1218,10 +1684,15 @@ impl App {
         };
         let (dot, title, sub, button, action): (Color32, String, String, &str, Option<Action>) = if self.asking {
             (GOLD, "Asking the server".into(), self.log.last().cloned().unwrap_or_default(), "WAIT", None)
+        } else if self.offer && self.tab == Tab::Play {
+            (GOLD, "Before your first game".into(), "Bring your AA Classic settings over, or skip it: Settings can do it any time.".into(), "JUST PLAY", Some(Action::SkipOffer))
+        } else if self.xfer.working && self.play_after_transfer {
+            (GOLD, "Bringing your settings".into(), "The game starts right after.".into(), "WAIT", None)
         } else if self.signup && self.tab == Tab::Play {
+            let sub = if self.baked_invite.is_some() { "PLAY makes your account, sets up your copy of the game and starts it." } else { "Have an account already? Use the link on the right." };
             match &self.hint {
-                Some(h) => (RED, "New account".into(), h.clone(), "CREATE", Some(Action::SignUp)),
-                None => (BLUE, "New account".into(), "Have an account already? Use the link on the right.".into(), "CREATE", Some(Action::SignUp)),
+                Some(h) => (RED, "New account".into(), h.clone(), "PLAY", Some(Action::SignUp)),
+                None => (BLUE, "New account".into(), sub.into(), "PLAY", Some(Action::SignUp)),
             }
         } else if self.tab == Tab::Transfer && !self.installing && !self.busy {
             self.transfer_status()
@@ -1234,7 +1705,7 @@ impl App {
             (BLUE, "Playing".into(), "The game is running. Have fun! Close it to play again.".into(), "PLAYING", None)
         } else {
             match &self.state {
-                Err(e) => (RED, "Choose your AA Classic folder".into(), e.clone(), "SETTINGS", Some(Action::ChooseFolder)),
+                Err(e) => (RED, "AA Classic was not found".into(), e.clone(), "FIND IT", Some(Action::ChooseFolder)),
                 Ok(State::NotSetUp) if self.cfg.mode == Mode::Own => {
                     let last = self.log.last().filter(|l| l.starts_with("install:") || l.starts_with("build pack:")).cloned();
                     if vault::builds(&self.paths).is_empty() {
@@ -1245,26 +1716,33 @@ impl App {
                         (MUTED, "Not installed yet".into(), last.unwrap_or_else(|| "Downloads the game data from AA Classic's file host: about 24 GB to download, 46 GB on disk. No account needed.".into()), "INSTALL GAME", Some(Action::Install))
                     }
                 }
-                Ok(State::NotSetUp) => (
-                    if self.hint.is_some() { RED } else { MUTED },
-                    "One step before you play".into(),
-                    self.hint.clone().unwrap_or_else(|| format!(
-                        "The first press makes your own copy of the game ({}), then it starts. AA Classic stays exactly as it is.",
-                        if self.cfg.mode == Mode::Full { "about 45 GB" } else { "about 65 MB, a minute or two" }
-                    )),
-                    if self.cfg.username.trim().is_empty() || self.password.is_empty() { "INSTALL" } else { "PLAY" },
-                    Some(Action::Setup),
-                ),
+                Ok(State::NotSetUp) => {
+                    // AA Classic on another drive: say where the copy goes and why
+                    let other = match (&self.cfg.aac_dir, self.cfg.mode) {
+                        (Some(d), Mode::Standard) if find::client_place(&self.paths.client(), d).is_some() => Some(find::place_note(&self.paths.root, &self.paths.client(), d)),
+                        _ => None,
+                    };
+                    (
+                        if self.hint.is_some() { RED } else { MUTED },
+                        "One step before you play".into(),
+                        self.hint.clone().or(other).unwrap_or_else(|| format!(
+                            "The first press makes your own copy of the game ({}), then it starts. AA Classic stays exactly as it is.",
+                            if self.cfg.mode == Mode::Full { "about 45 GB" } else { "about 65 MB, a minute or two" }
+                        )),
+                        "PLAY",
+                        Some(Action::Play),
+                    )
+                }
                 Ok(State::BinOutdated) | Ok(State::PakOutdated) => {
-                    (GOLD, "AA Classic was updated".into(), "Update your copy to match it (a minute or two).".into(), "UPDATE", Some(Action::Setup))
+                    (GOLD, "AA Classic was updated".into(), "PLAY updates your copy to match it first (a minute or two).".into(), "PLAY", Some(Action::Play))
                 }
                 Ok(State::Ready) => match &self.hint {
                     Some(h) => (RED, "Ready to play".into(), h.clone(), "PLAY", Some(Action::Play)),
                     None => {
-                        let sub = if self.cfg.username.trim().is_empty() {
-                            "Sign in on the right, then press Play.".to_string()
-                        } else {
-                            format!("Signed in as {} · your copy of the game is up to date", self.cfg.username.trim())
+                        let sub = match &self.saved {
+                            Some(s) => format!("Signed in as {} · your copy of the game is up to date", s.username),
+                            None if self.cfg.username.trim().is_empty() => "Enter your name and password on the right, then press Play.".to_string(),
+                            None => "Enter your password on the right, then press Play.".to_string(),
                         };
                         let _ = mode;
                         (GREEN, "Ready to play".into(), sub, "PLAY", Some(Action::Play))
@@ -1300,13 +1778,7 @@ impl App {
         let enabled = action.is_some();
         let resp = ui.scope_builder(UiBuilder::new().max_rect(b), |ui| big_button(ui, b.size(), button, enabled)).inner;
         if resp.clicked() {
-            *act = match action {
-                Some(Action::ChooseFolder) => {
-                    self.tab = Tab::Settings;
-                    Some(Action::ChooseFolder)
-                }
-                a => a,
-            };
+            *act = action;
         }
     }
 }
@@ -1335,6 +1807,7 @@ impl eframe::App for App {
         self.bottom_bar(root, bottom, &mut act);
         // a thin frame around the borderless window
         p.rect_stroke(full.shrink(0.5), 0.0, Stroke::new(1.0, gold_a(50)), egui::StrokeKind::Inside);
+        self.report_dialog(&ctx, &mut act);
 
         if let Some(a) = act {
             self.run(a);

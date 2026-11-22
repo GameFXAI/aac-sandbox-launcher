@@ -154,17 +154,14 @@ impl App {
         });
     }
 
-    /// Server parts can only go out with the account's name and password on a server link.
-    fn account_ready(&self) -> Result<Server, &'static str> {
+    /// Server parts can only go out with the account's name and its password or remembered sign-in, on a server link.
+    fn account_ready(&self) -> Result<(Server, String, Secret), &'static str> {
         match Server::parse(&self.cfg.login_ip) {
-            Ok(s @ Server::Api { .. }) => {
-                if self.cfg.username.trim().is_empty() || self.password.is_empty() {
-                    Err("Enter your account and password on the Play tab first")
-                } else {
-                    Ok(s)
-                }
-            }
-            _ => Err("Needs a server link (https://...) on the Play tab"),
+            Ok(s @ Server::Api { .. }) => match self.secret() {
+                Some((u, c)) => Ok((s, u, c)),
+                None => Err("Sign in on the Play screen first"),
+            },
+            _ => Err("Needs a server link (https://...) in Settings"),
         }
     }
 
@@ -203,6 +200,13 @@ impl App {
             }
             XMsg::Done(r) => {
                 self.xfer.working = false;
+                // the first start's offer: the game starts once the setup is in place, moved or not
+                if std::mem::take(&mut self.play_after_transfer) {
+                    if let Err(e) = &r {
+                        self.say(format!("transfer: {e}"));
+                    }
+                    self.press_play();
+                }
                 match r {
                     Ok(lines) => {
                         self.say(format!("transfer from AA Classic: {}", lines.join("; ")));
@@ -232,6 +236,12 @@ impl App {
         }
     }
 
+    /// Ticks every line that can move (the first start's offer: everything there is).
+    pub(super) fn retick_all(&mut self) {
+        self.xfer.touched.clear();
+        self.retick();
+    }
+
     /// Ticks every line that can move, except the ones the player unticked.
     fn retick(&mut self) {
         let server_ok = self.account_ready().is_ok();
@@ -252,7 +262,7 @@ impl App {
         let server_part = scan.payload(&ticks);
         let account = if server_part.is_some() {
             match self.account_ready() {
-                Ok(s) => Some((s, self.cfg.username.trim().to_string(), self.password.clone())),
+                Ok(a) => Some(a),
                 Err(e) => return self.say(format!("transfer: {e}")),
             }
         } else {
@@ -268,8 +278,7 @@ impl App {
                 let mut server = String::new();
                 let mut user = String::new();
                 if let (Some(p), Some((s, u, pw))) = (server_part, account) {
-                    let (u, pw): (String, String) = (u, pw);
-                    match net::transfer(&s, &u, &pw, &p) {
+                    match net::transfer(&s, &u, pw.cred(), &p) {
                         Ok(a) => {
                             lines.push(format!("on your account {u}: {} (at your next login)", a.accepted.join(", ")));
                             server = link;
@@ -292,9 +301,9 @@ impl App {
     pub(super) fn start_undo(&mut self) {
         let Some(last) = transfer::last(&self.paths) else { return };
         let account = if !last.server.is_empty() {
-            match (Server::parse(&last.server), self.password.is_empty()) {
-                (Ok(s), false) => Some((s, last.account.clone(), self.password.clone())),
-                _ => return self.say("undo: enter the password of the account the transfer went to"),
+            match (Server::parse(&last.server), self.secret()) {
+                (Ok(s), Some((u, c))) if u.eq_ignore_ascii_case(&last.account) => Some((s, last.account.clone(), c)),
+                _ => return self.say("undo: sign in to the account the transfer went to first"),
             }
         } else {
             None
@@ -305,7 +314,7 @@ impl App {
         std::thread::spawn(move || {
             let r = (|| {
                 if let Some((s, u, pw)) = &account {
-                    net::transfer(s, u, pw, &serde_json::json!({ "undo": true }))?;
+                    net::transfer(s, u, pw.cred(), &serde_json::json!({ "undo": true }))?;
                 }
                 let mut lines = transfer::undo_local(&paths)?;
                 if let Some((_, u, _)) = account {
@@ -535,25 +544,4 @@ impl App {
         }
         (GREEN, format!("Ready to move {} thing{}", ticked.len(), if ticked.len() == 1 { "" } else { "s" }), sub.join(" · "), "TRANSFER", Some(Action::Transfer))
     }
-}
-
-/// The outlined gold button on the Play tab that opens the transfer screen.
-pub(super) fn transfer_button(ui: &mut egui::Ui, width: f32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 54.0), Sense::click());
-    let p = ui.painter();
-    let hov = resp.hovered();
-    grad_shape(p, rect, 8.0, if hov { rgba(22, 60, 62, 235) } else { rgba(16, 38, 42, 225) }, rgba(10, 16, 20, 235), Stroke::new(1.2, if hov { GOLD } else { gold_a(150) }));
-    // two arrows: from AA Classic into this client
-    let c = pos2(rect.left() + 30.0, rect.center().y);
-    let s = Stroke::new(1.8, GOLD);
-    p.line_segment([c + vec2(-9.0, -4.0), c + vec2(8.0, -4.0)], s);
-    p.line_segment([c + vec2(4.0, -8.0), c + vec2(8.0, -4.0)], s);
-    p.line_segment([c + vec2(4.0, 0.0), c + vec2(8.0, -4.0)], s);
-    p.line_segment([c + vec2(9.0, 5.0), c + vec2(-8.0, 5.0)], Stroke::new(1.8, gold_a(140)));
-    p.line_segment([c + vec2(-4.0, 1.0), c + vec2(-8.0, 5.0)], Stroke::new(1.8, gold_a(140)));
-    p.line_segment([c + vec2(-4.0, 9.0), c + vec2(-8.0, 5.0)], Stroke::new(1.8, gold_a(140)));
-    p.text(pos2(rect.left() + 54.0, rect.top() + 9.0), Align2::LEFT_TOP, "Bring your setup from AA Classic", bold_font(16.0), if hov { Color32::from_rgb(190, 255, 244) } else { INK });
-    p.text(pos2(rect.left() + 54.0, rect.top() + 30.0), Align2::LEFT_TOP, "Settings, keybinds, interface, bars and your gear, in one go", FontId::proportional(12.5), MUTED);
-    p.text(pos2(rect.right() - 18.0, rect.center().y), Align2::RIGHT_CENTER, "›", title_font(26.0), if hov { GOLD } else { gold_a(150) });
-    resp
 }

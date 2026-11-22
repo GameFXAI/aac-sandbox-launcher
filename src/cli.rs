@@ -96,6 +96,10 @@ fn go(args: &[String]) -> Result<(), String> {
         "setup" => {
             let a = aac()?;
             cfg.aac_dir = Some(a.root().to_path_buf());
+            let mut paths = paths.clone();
+            if let Some(line) = place_client(&mut paths, &a, cfg.mode)? {
+                println!("{line}");
+            }
             setup(&paths, &a, cfg.mode, &|l| println!("{l}"))?;
             cfg.save(&paths).map_err(|e| e.to_string())?;
             log_line(&paths, &format!("setup {:?} done", cfg.mode));
@@ -113,7 +117,7 @@ fn go(args: &[String]) -> Result<(), String> {
                     if let Some(line) = addons::ensure(&paths, &server)? {
                         println!("{line}");
                     }
-                    let t = net::login(&server, &user, &p)?;
+                    let t = net::login(&server, &user, net::Cred::Password(&p), false)?;
                     println!("logged in as {}", t.username);
                     (t.username, t.ticket)
                 }
@@ -212,7 +216,7 @@ fn go(args: &[String]) -> Result<(), String> {
                     if password.is_empty() {
                         return Err("the last transfer also went to your account: pass --password".into());
                     }
-                    net::transfer(&Server::parse(&last.server)?, &last.account, &password, &serde_json::json!({ "undo": true }))?;
+                    net::transfer(&Server::parse(&last.server)?, &last.account, net::Cred::Password(&password), &serde_json::json!({ "undo": true }))?;
                     println!("server: your keybinds, options and bars from before go back at the next login");
                 }
                 for l in transfer::undo_local(&paths)? {
@@ -254,7 +258,7 @@ fn go(args: &[String]) -> Result<(), String> {
             let (mut srv, mut acct) = (String::new(), String::new());
             if let Some(p) = scan.payload(&ticks) {
                 let s = server()?;
-                let a = net::transfer(&s, user.trim(), &password, &p)?;
+                let a = net::transfer(&s, user.trim(), net::Cred::Password(&password), &p)?;
                 lines.push(format!("on account {}: {} (at the next login)", user.trim(), a.accepted.join(", ")));
                 srv = cfg.login_ip.trim().to_string();
                 acct = user.trim().to_string();
@@ -399,10 +403,7 @@ fn go(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The usual install folder, if it is there.
+/// The AA Classic install on this PC: from the Windows registry, else the usual folders (find.rs).
 pub fn default_aac_dir() -> Option<PathBuf> {
-    [r"C:\Games\AAClassic", r"C:\Program Files\AAClassic", r"D:\Games\AAClassic"]
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.join("binNext").join("archeage.exe").is_file())
+    crate::find::aac().map(|h| h.dir)
 }

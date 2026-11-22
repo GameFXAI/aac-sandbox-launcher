@@ -1,15 +1,15 @@
 [package]
 name = "aac-sandbox-launcher"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
-description = "Launcher for a separate, sandboxed copy of the AA Classic client that plays on AAEmu servers"
+description = "AA Replay launcher: a separate, sandboxed copy of the AA Classic client that plays on AA Replay servers"
 license = "GPL-3.0-only"
 
 [dependencies]
 aes = "0.8"
 base64 = "0.23.1"
 ed25519-dalek = "2"
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
 getrandom = "0.2"
 hex = "0.4.3"
 md-5 = "0.10"
@@ -19,4 +19,4 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
 ureq = { version = "2", features = ["json"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_Console", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_Console", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Registry", "Win32_Security_Cryptography"] }
