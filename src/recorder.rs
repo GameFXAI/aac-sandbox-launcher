@@ -382,7 +382,6 @@ pub struct Status {
     pub fights: u32,
     pub pid: u32,
     pub updated: f64,
-    pub version: String,
 }
 
 impl Status {
@@ -650,7 +649,8 @@ mod tests {
         let d = tmp("status");
         let f = d.join("status.json");
         assert_eq!(read_status(&f, 100.0, &|_| true), Status::off());
-        fs::write(&f, r#"{"state":"recording","line":"Recording.","problem":null,"pid":42,"updated":100.0,"fights":3,"last":{"ended":90,"fights":2,"text":"Last recording ended at 12:00: 2 fights found."}}"#).unwrap();
+        // as recorder.py writes it, with fields the launcher does not use
+        fs::write(&f, r#"{"version":1,"state":"recording","line":"Recording.","problem":null,"aac":"game","capture":null,"converting":false,"folder":"C:\\Users\\Zoë","pid":42,"updated":100.0,"fights":3,"last":{"ended":90,"fights":2,"text":"Last recording ended at 12:00: 2 fights found."}}"#).unwrap();
         let s = read_status(&f, 101.0, &|p| p == 42);
         assert_eq!((s.state.as_str(), s.fights), ("recording", 3));
         // the process is gone: off, but the last recording is still told
