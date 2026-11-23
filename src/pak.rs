@@ -308,11 +308,16 @@ impl Pak {
 
     /// The table and header as they would be written at `self.end`.
     fn table(&self) -> Vec<u8> {
-        let total = self.files.len() + self.free.len();
+        self.table_of(&self.files)
+    }
+
+    /// A table and header listing `files` (in place of ours) and our unused slots.
+    fn table_of(&self, files: &[Entry]) -> Vec<u8> {
+        let total = files.len() + self.free.len();
         let body = round_up((total * RECORD) as u64) as usize;
         let mut out = vec![0u8; body + HEADER as usize];
         let unused = |&(offset, size): &(u64, u64)| Entry { name: UNUSED.into(), offset, size, padding: 0, md5: [0; 16], flags: 0, created: 0, modified: 0, extra: 0 };
-        let all = self.files.iter().cloned().chain(self.free.iter().map(unused));
+        let all = files.iter().cloned().chain(self.free.iter().map(unused));
         for (e, rec) in all.zip(out.chunks_exact_mut(RECORD)) {
             write_record(&e, rec);
             cbc(rec, true);
@@ -325,6 +330,37 @@ impl Pak {
         head[16..32].copy_from_slice(&self.header_rest);
         cbc(head, true);
         out
+    }
+
+    /// What follows this archive's last byte so that the archive plus that tail reads as the archive with `files`
+    /// replaced: each new file in a 512-byte slot, then a file table in which only the replaced files point at their
+    /// new slots, then the header. The archive itself is not changed. This is the art overlay (art.rs): the overlay
+    /// loader in the client's binNext shows the client `game_pak` + this tail as one file. Every name must be in the
+    /// archive already.
+    pub fn overlay_tail(&self, files: &[(&str, &[u8])], out: &mut dyn std::io::Write) -> Result<u64, String> {
+        let base = self.file.metadata().map_err(|e| e.to_string())?.len();
+        if base % BLOCK != 0 {
+            return Err("the archive's length is not a multiple of 512".into());
+        }
+        let mut table = self.files.clone();
+        let mut at = base;
+        let io = |e: std::io::Error| format!("writing the overlay: {e}");
+        for (name, data) in files {
+            let i = *self.index.get(*name).ok_or_else(|| format!("{name} is not in the archive"))?;
+            let slot = round_up(data.len() as u64);
+            let pad = slot - data.len() as u64;
+            out.write_all(data).map_err(io)?;
+            out.write_all(&vec![0u8; pad as usize]).map_err(io)?;
+            let e = &mut table[i];
+            e.offset = at;
+            e.size = data.len() as u64;
+            e.padding = pad as u32;
+            e.md5 = Md5::digest(data).into();
+            at += slot;
+        }
+        let t = self.table_of(&table);
+        out.write_all(&t).map_err(io)?;
+        Ok(at + t.len() as u64 - base)
     }
 
     /// Writes the table and header after the file data and cuts the file there. Until this is called after a
@@ -649,6 +685,32 @@ mod tests {
         assert_eq!(base.entries().len(), 2);
         assert_eq!(body(&base, "b"), bytes(100, 2));
         assert_eq!(base.get("a").unwrap().size, 600);
+    }
+
+    #[test]
+    fn an_overlay_tail_reads_as_the_archive_with_files_replaced() {
+        let path = tmp("overlay").join("game_pak");
+        let mut p = Pak::create(&path).unwrap();
+        add(&mut p, "a.dds", &bytes(700, 1));
+        add(&mut p, "b.dds", &bytes(300, 2));
+        p.save().unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let p = Pak::open(&path, false).unwrap();
+        let mut tail = Vec::new();
+        let new_a = bytes(1500, 9);
+        let n = p.overlay_tail(&[("a.dds", &new_a)], &mut tail).unwrap();
+        assert_eq!(n, tail.len() as u64);
+        assert!(p.overlay_tail(&[("c.dds", &new_a)], &mut Vec::new()).is_err());
+        drop(p);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the archive itself is never changed");
+        // the client sees the archive + the tail as one file
+        let joined = tmp("overlay-joined").join("joined");
+        std::fs::write(&joined, [before.clone(), tail].concat()).unwrap();
+        let j = Pak::open(&joined, false).unwrap();
+        assert_eq!(body(&j, "a.dds"), new_a);
+        assert_eq!(body(&j, "b.dds"), bytes(300, 2));
+        assert_eq!(j.get("a.dds").unwrap().md5, <[u8; 16]>::from(Md5::digest(&new_a)));
+        assert_eq!(j.check(&|_, _| {}).unwrap().0, Vec::<String>::new());
     }
 
     #[test]

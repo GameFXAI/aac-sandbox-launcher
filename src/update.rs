@@ -56,10 +56,16 @@ fn key_from_hex(key: &str) -> Result<VerifyingKey, String> {
     VerifyingKey::from_bytes(&bytes).map_err(|_| "this launcher's update key is not valid".to_string())
 }
 
+/// Checks that `bytes` carry the maker's ed25519 signature (`signature_hex`, 128 hex characters) under `key`.
+/// The art pack's manifest (art.rs) is signed with the same key as the launcher's own updates.
+pub fn verify(bytes: &[u8], signature_hex: &str, key: &str) -> Result<(), String> {
+    let sig: [u8; 64] = hex::decode(signature_hex.trim()).ok().and_then(|b| b.try_into().ok()).ok_or("the update's signature is not in the expected form")?;
+    key_from_hex(key)?.verify(bytes, &Signature::from_bytes(&sig)).map_err(|_| "the update is not signed by this launcher's maker: ignored".to_string())
+}
+
 /// Checks the signature, then reads the manifest. Returns the release when it is newer than `current`.
 pub fn read_manifest(manifest: &[u8], signature_hex: &str, key: &str, current: &str) -> Result<Option<Release>, String> {
-    let sig: [u8; 64] = hex::decode(signature_hex.trim()).ok().and_then(|b| b.try_into().ok()).ok_or("the update's signature is not in the expected form")?;
-    key_from_hex(key)?.verify(manifest, &Signature::from_bytes(&sig)).map_err(|_| "the update is not signed by this launcher's maker: ignored".to_string())?;
+    verify(manifest, signature_hex, key)?;
     let m: Manifest = serde_json::from_slice(manifest).map_err(|e| format!("the update manifest was not understood: {e}"))?;
     let r = m.launcher;
     let (new, now) = (version(&r.version).ok_or("the update manifest has no usable version")?, version(current).ok_or("this launcher has no usable version")?);
@@ -74,12 +80,12 @@ pub fn read_manifest(manifest: &[u8], signature_hex: &str, key: &str, current: &
 }
 
 /// HTTPS, or plain HTTP to this PC.
-fn allowed_url(url: &str) -> bool {
+pub(crate) fn allowed_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.starts_with("https://") || ["http://127.0.0.1:", "http://127.0.0.1/", "http://localhost:", "http://localhost/"].iter().any(|p| lower.starts_with(p))
 }
 
-fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     if !allowed_url(url) {
         return Err("updates are only fetched over https".into());
     }

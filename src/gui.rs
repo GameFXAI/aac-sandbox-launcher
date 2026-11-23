@@ -851,6 +851,10 @@ impl App {
                         return;
                     }
                 }
+                // the AA REPLAY loading screens, splash and icon (never stops a play)
+                if let Some(line) = crate::art::ensure(&paths) {
+                    let _ = tx.send(Msg::Line(line));
+                }
                 let _ = tx.send(Msg::Ticket(net::login(&server, &username, secret.cred(), remember).map(|t| (t.username, t.ticket, t.session))));
             });
             return;

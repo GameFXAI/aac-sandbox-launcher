@@ -73,6 +73,7 @@ aac-sandbox-launcher info [--server LINK]
 aac-sandbox-launcher signup --user NAME --password P [--invite CODE] [--server LINK]
 aac-sandbox-launcher settings copy [--from FILE]
 aac-sandbox-launcher addons [--server LINK]
+aac-sandbox-launcher art
 aac-sandbox-launcher update [--check]
 aac-sandbox-launcher vault
 aac-sandbox-launcher pack export FILE [--build ID]
@@ -93,6 +94,30 @@ Only when asked ("Copy my graphics settings" in Settings, or `settings copy`): t
 A server with an account API can name an addon pack (the menus and HUD of its game modes). Before play the launcher downloads it from that server, checks every file against the pack's list and the pack's id against the one the server named, and installs it into the sandbox client's own `Documents\AAClassic\Addon` (never the real one). It adds the addons to `addons.txt` and `addon_settings`; addons the player put there themself and their on/off settings are left alone. The next pack replaces exactly the addons the last one installed.
 
 Checked 2026-11-21 against a local login server: the arena pack (`pts_menu`, 174 files) downloads and installs; the files equal the server's package. Not yet seen: the client loading it from there (the game was not started).
+
+## The AA REPLAY art
+
+Before every play the launcher puts the AA REPLAY pictures in its own copy of the client: the loading screens, the
+login logo and server-select and rating backgrounds, the loading bar, the intro movie, the startup splash and the
+window icon (art.rs). AA Classic's folder is never touched.
+
+- **Where it comes from.** `https://77-42-46-123.sslip.io/launcher/art/art.json` names the art pack (id, size,
+  SHA-256). It is signed with the same key as the launcher's own updates (`art.json.sig`), so a pack nobody signed is
+  never used. The pack (about 12 MB) is downloaded once, checked, and kept in `<data>rt`; when the host can't be
+  reached, the kept one is used.
+- **What it changes, in our copy only:** `clienta-replay-art\overlay.bin` + `overlay.json` (the new game files, a
+  file table pointing at them and the header, built on this PC against its own `game_pak`, which is only read);
+  `binNextersion.dll`, the loader that makes the client read `game_pak` + `overlay.bin` as one archive; and the
+  splash and icon resources in `binNextes_ru.dll`, `res_us.dll` and `archeage.exe`, only when those are the build
+  the art was made for (the originals are kept in `aa-replay-art\originals`).
+- **After an AA Classic update.** A new `binNext` is copied as before, which drops the loader and the resources; a
+  changed `game_pak` turns the loader off by itself (the length no longer matches `overlay.json`). The next PLAY sees
+  this (`aa-replay-art\launcher.json`) and builds it again.
+- **Never in the way.** If anything fails, the game starts with its own pictures and the log says why.
+  `AAREPLAY_ART=off` skips it; `AAREPLAY_ART_MANIFEST` points at another (still signed) manifest, for tests.
+- **Publishing new art.** On the server repo: `python Tools/branding/aa_replay_art.py launcher-pack` (it needs
+  `zstandard`), then `aac-sandbox-launcher manifest sign art.json <key>`, then upload the pack, `art.json` and
+  `art.json.sig` to `/srv/aareplay/www/launcher/art/`. `art` on the command line does the install by hand.
 
 ## Client builds: vault and build packs
 

@@ -280,6 +280,9 @@ impl State {
 fn fingerprint(dir: &Path) -> io::Result<Vec<(String, u64, u128)>> {
     let mut out = Vec::new();
     walk(dir, dir, &mut |rel, meta| {
+        if crate::art::touched(rel) {
+            return; // the AA REPLAY art changes these in our copy (art.rs)
+        }
         let t = meta.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map(|d| d.as_nanos());
         out.push((rel.to_lowercase(), meta.len(), t.unwrap_or(0) / 1_000_000));
     })?;

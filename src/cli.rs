@@ -17,6 +17,7 @@
 //!                                   preview, then moves the ticked parts; --dry-run only shows it
 //!   aac-sandbox-launcher transfer undo [--user U --password P]   puts back what the last transfer replaced
 //!   aac-sandbox-launcher addons [--server <link>]     install the addons the server names (play does this too)
+//!   aac-sandbox-launcher art                           put the signed AA REPLAY art in our copy (play does this too)
 //!   aac-sandbox-launcher vault                        the client builds kept, by build id
 //!   aac-sandbox-launcher pack export <file> [--build ID]   one build as a file for a friend
 //!   aac-sandbox-launcher pack import <file> [--server <link>]   a friend's build into the vault
@@ -110,6 +111,10 @@ fn go(args: &[String]) -> Result<(), String> {
             let user = opt(args, "--user").ok_or("--user is required")?;
             let server = server()?;
             let address = server.client_address()?;
+            // the AA REPLAY loading screens, splash and icon (never stops a play)
+            if let Some(line) = crate::art::ensure(&paths) {
+                println!("{line}");
+            }
             let (user, token) = match (opt(args, "--token"), opt(args, "--password"), &server) {
                 (Some(t), _, _) => (user, t.to_lowercase()),
                 (None, Some(p), Server::Api { .. }) => {
@@ -268,6 +273,10 @@ fn go(args: &[String]) -> Result<(), String> {
                 println!("moved: {l}");
             }
         }
+        "art" => match crate::art::ensure(&paths) {
+            Some(line) => println!("{line}"),
+            None => println!("the AA REPLAY art is in place (or none is published)"),
+        },
         "addons" => {
             let server = server()?;
             match addons::ensure(&paths, &server)? {
