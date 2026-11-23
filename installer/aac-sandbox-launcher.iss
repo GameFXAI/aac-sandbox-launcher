@@ -86,6 +86,14 @@ Type: dirifempty; Name: "{userprograms}\AAEmu Sandbox Launcher"
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent
 
+; recording AA Classic (recorder.rs): stopped and taken out of Windows start before the files go
+[UninstallRun]
+Filename: "{app}\{#AppExe}"; Parameters: "recorder off"; Flags: runhidden waituntilterminated; RunOnceId: "RecorderOff"
+
+[Registry]
+; the recorder's sign-in entry, in case the launcher could not remove it
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "AA Replay Recorder"; Flags: uninsdeletevalue dontcreatekey
+
 [UninstallDelete]
 ; what the launcher's own update leaves next to the exe
 Type: files; Name: "{app}\*.old"
