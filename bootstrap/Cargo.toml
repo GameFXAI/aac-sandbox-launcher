@@ -1,0 +1,35 @@
+[package]
+name = "aareplay-setup"
+version = "1.0.0"
+edition = "2024"
+description = "AA Replay setup: downloads the signed AA Replay installer and runs it"
+license = "GPL-3.0-only"
+build = "build.rs"
+
+# The file people download from the browser. It is meant to stay the same, byte for byte, across launcher releases:
+# Windows SmartScreen builds its reputation for an unsigned file per file hash, so every rebuild starts again from
+# zero. It holds no launcher version; it fetches the current installer (setup.json, signed with the update key).
+# Change it only when it must change (docs/bootstrapper.md).
+
+[[bin]]
+name = "AAReplaySetup"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_LibraryLoader"] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# not part of the launcher's package
+[workspace]

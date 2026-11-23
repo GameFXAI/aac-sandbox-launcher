@@ -17,7 +17,7 @@
 //!                                   preview, then moves the ticked parts; --dry-run only shows it
 //!   aac-sandbox-launcher transfer undo [--user U --password P]   puts back what the last transfer replaced
 //!   aac-sandbox-launcher addons [--server <link>]     install the addons the server names (play does this too)
-//!   aac-sandbox-launcher recorder setup|on|off|status|send [--user U (--password P | --token T)]   record AA Classic
+//!   aac-sandbox-launcher recorder setup|on|off|admin|remove|status|send [--user U (--password P | --token T)]   record AA Classic
 //!                                   and send your fights to your replays (see recorder.rs; send uses the remembered
 //!                                   sign-in when no --user is given)
 //!   aac-sandbox-launcher art                           put the signed AA REPLAY art in our copy (play does this too)
@@ -155,6 +155,27 @@ fn go(args: &[String]) -> Result<(), String> {
                     recorder::turn_on(&paths, &say)?;
                     log_line(&paths, "recorder on");
                     println!("recording is on: it starts with Windows; start AA Classic from its own launcher");
+                    if let Some(a) = crate::admin::after_setup(&paths, false, &say) {
+                        let l = a.unwrap_or_else(|e| e);
+                        log_line(&paths, &format!("recorder admin: {l}"));
+                        println!("{l}");
+                    }
+                }
+                Some("admin") => {
+                    // the one admin prompt again (after a No at setup)
+                    match crate::admin::after_setup(&paths, true, &say) {
+                        Some(Ok(l)) => println!("{l}"),
+                        Some(Err(e)) => return Err(e),
+                        None => println!("nothing to set up: {:?}", crate::admin::state(&paths)),
+                    }
+                }
+                Some("remove") => {
+                    // uninstall: off, and the admin task removes itself (no prompt)
+                    recorder::turn_off(&paths)?;
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    crate::admin::remove(&paths)?;
+                    log_line(&paths, "recorder removed");
+                    println!("recording is off and its admin task is removed");
                 }
                 Some("off") => {
                     recorder::turn_off(&paths)?;
@@ -178,7 +199,7 @@ fn go(args: &[String]) -> Result<(), String> {
                     };
                     println!("{n} fight{} sent to your replays", if n == 1 { "" } else { "s" });
                 }
-                Some(x) => return Err(format!("recorder {x}: the commands are setup, on, off, status and send")),
+                Some(x) => return Err(format!("recorder {x}: the commands are setup, on, off, admin, remove, status and send")),
             }
         }
         "info" => {

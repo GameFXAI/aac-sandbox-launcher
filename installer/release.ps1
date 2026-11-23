@@ -13,6 +13,8 @@
 #      with -KeyFile (the update key; its path is passed on, its contents never printed).
 #   4. installer\out\AAReplaySetup.exe with the same exe inside; Inno Setup signs the setup and its uninstaller through
 #      sign.ps1 when signing is set up.
+#   5. release\AAReplaySetup-<version>.exe (that installer) and release\setup-<version>.json (+ .sig): what the
+#      bootstrapper fetches. The bootstrapper (bootstrap\, the file people download) is not rebuilt.
 # Uploading stays a separate, deliberate step (README: Updating the launcher itself).
 param(
     [Parameter(Mandatory)][string]$Version,
@@ -90,3 +92,21 @@ foreach ($f in $exe, $setup) {
     Write-Output ("{0}: {1} ({2})" -f (Split-Path $f -Leaf), $who, $s.Status)
 }
 Write-Output "installer: installer\out\AAReplaySetup.exe ($((Get-Item $setup).Length) bytes)"
+
+# 5. what the bootstrapper (bootstrap\, the AAReplaySetup.exe people download) fetches: this release's installer
+#    under its own name and the signed setup.json naming it. The bootstrapper itself is not rebuilt here: it stays
+#    the same file across releases (docs/bootstrapper.md).
+$inner = "AAReplaySetup-$Version.exe"
+Copy-Item $setup (Join-Path $rel $inner) -Force
+$hash = (Get-FileHash (Join-Path $rel $inner) -Algorithm SHA256).Hash.ToLowerInvariant()
+$size = (Get-Item (Join-Path $rel $inner)).Length
+$setupJson = Join-Path $rel "setup-$Version.json"
+$text = "{`n `"setup`": {`n  `"version`": `"$Version`",`n  `"url`": `"$BaseUrl/setup/$inner`",`n  `"size`": $size,`n  `"sha256`": `"$hash`"`n }`n}`n"
+[System.IO.File]::WriteAllText($setupJson, $text, (New-Object System.Text.UTF8Encoding $false))
+if ($KeyFile) {
+    & $exe manifest sign $setupJson $KeyFile | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'setup.json sign failed' }
+    Write-Output "bootstrapper files: release\$inner, release\setup-$Version.json (+ .sig) -> launcher/setup/ and launcher/setup.json"
+} else {
+    Write-Output "bootstrapper files: release\$inner, release\setup-$Version.json (NOT signed: no -KeyFile)"
+}

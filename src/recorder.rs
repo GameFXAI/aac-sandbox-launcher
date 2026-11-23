@@ -136,8 +136,9 @@ struct Header {
     files: Vec<PackFile>,
 }
 
-/// Unpacks a pack's compressed bytes into `to` (which must not exist yet). Returns the number of files.
-pub fn unpack(packed: &[u8], unpacked_size: u64, to: &Path) -> Result<usize, String> {
+/// Unpacks a pack's compressed bytes into `to` (which must not exist yet). Returns the number of files and the
+/// header's bytes (the admin task checks the files it copies against them: admin.rs).
+pub fn unpack(packed: &[u8], unpacked_size: u64, to: &Path) -> Result<(usize, Vec<u8>), String> {
     let bad = |what: &str| format!("the recorder pack is damaged ({what})");
     let dec = ruzstd::decoding::StreamingDecoder::new(packed).map_err(|e| format!("cannot unpack the recorder: {e}"))?;
     let limit = if unpacked_size > 0 { unpacked_size } else { MAX_UNPACKED };
@@ -156,7 +157,8 @@ pub fn unpack(packed: &[u8], unpacked_size: u64, to: &Path) -> Result<usize, Str
     if n == 0 || n > MAX_HEADER {
         return Err(bad("header"));
     }
-    let head: Header = serde_json::from_slice(&exact(n, &mut dec)?).map_err(|_| bad("header"))?;
+    let head_bytes = exact(n, &mut dec)?;
+    let head: Header = serde_json::from_slice(&head_bytes).map_err(|_| bad("header"))?;
     if head.format != 1 || head.files.is_empty() || head.files.len() > MAX_FILES {
         return Err(bad("header"));
     }
@@ -181,6 +183,7 @@ pub fn unpack(packed: &[u8], unpacked_size: u64, to: &Path) -> Result<usize, Str
             fs::create_dir_all(parent).map_err(|e| format!("cannot make {}: {e}", parent.display()))?;
         }
         fs::write(&dst, &b).map_err(|e| format!("cannot write {}: {e}", dst.display()))?;
+        crate::update::strip_mark_of_the_web(&dst);
     }
     let mut rest = [0u8; 1];
     if dec.read(&mut rest).map_err(|_| bad("end"))? != 0 {
@@ -189,7 +192,7 @@ pub fn unpack(packed: &[u8], unpacked_size: u64, to: &Path) -> Result<usize, Str
     if unpacked_size > 0 && read != unpacked_size {
         return Err(bad("size"));
     }
-    Ok(head.files.len())
+    Ok((head.files.len(), head_bytes))
 }
 
 /// Puts the newest signed recorder in place (once; again only when a newer one is published). Returns its folder.
@@ -198,9 +201,10 @@ pub fn install(paths: &Paths, say: &dyn Fn(String)) -> Result<PathBuf, String> {
     let url = manifest_url();
     let fresh = crate::update::fetch(&url, 1 << 20).and_then(|m| {
         let sig = crate::update::fetch(&format!("{url}.sig"), 1024)?;
-        read_manifest(&m, &String::from_utf8_lossy(&sig), crate::update::UPDATE_KEY)
+        let sig = String::from_utf8_lossy(&sig).trim().to_string();
+        read_manifest(&m, &sig, crate::update::UPDATE_KEY).map(|r| (r, m, sig))
     });
-    let r = match fresh {
+    let (r, manifest, sig) = match fresh {
         Ok(r) => r,
         Err(e) => {
             if let Some(d) = installed(paths) {
@@ -211,7 +215,11 @@ pub fn install(paths: &Paths, say: &dyn Fn(String)) -> Result<PathBuf, String> {
     };
     let root = dir(paths);
     let target = root.join(&r.id);
+    // the signed manifest stays next to the recorder: the admin task checks the recorder against it
+    let keep = |root: &Path| fs::write(root.join(format!("{}.json", r.id)), &manifest).and_then(|()| fs::write(root.join(format!("{}.json.sig", r.id)), &sig));
     if installed(paths).as_deref() == Some(target.as_path()) {
+        let _ = keep(&root);
+        crate::admin::bring_up_to_date(paths);
         return Ok(target);
     }
     say(format!("Downloading the recorder ({} MB)…", r.size.div_ceil(1 << 20)));
@@ -222,10 +230,13 @@ pub fn install(paths: &Paths, say: &dyn Fn(String)) -> Result<PathBuf, String> {
     say("Unpacking the recorder…".into());
     let tmp = root.join(format!("{}.part", r.id));
     let _ = fs::remove_dir_all(&tmp);
-    if let Err(e) = unpack(&packed, r.unpacked_size, &tmp) {
-        let _ = fs::remove_dir_all(&tmp);
-        return Err(e);
-    }
+    let header = match unpack(&packed, r.unpacked_size, &tmp) {
+        Ok((_, h)) => h,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    };
     let was_running = status(paths).running();
     if was_running {
         stop(paths);
@@ -233,16 +244,22 @@ pub fn install(paths: &Paths, say: &dyn Fn(String)) -> Result<PathBuf, String> {
     }
     let _ = fs::remove_dir_all(&target);
     fs::rename(&tmp, &target).map_err(|e| format!("cannot put the recorder in place: {e}"))?;
+    keep(&root).and_then(|()| fs::write(root.join(format!("{}.header.json", r.id)), &header)).map_err(|e| format!("cannot put the recorder in place: {e}"))?;
     fs::write(root.join("current.txt"), &r.id).map_err(|e| format!("cannot put the recorder in place: {e}"))?;
     // older recorders are not needed any more (one still in use stays until the next time)
     if let Ok(rd) = fs::read_dir(&root) {
         for e in rd.flatten() {
             let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
             if p.is_dir() && p != target {
                 let _ = fs::remove_dir_all(p);
+            } else if p.is_file() && name.len() > 64 && is_hex64(&name[..64]) && !name.starts_with(&r.id) {
+                let _ = fs::remove_file(p);
             }
         }
     }
+    // the admin task, when set up, takes the new recorder too (no prompt)
+    crate::admin::bring_up_to_date(paths);
     if was_running || run_entry(paths).is_some() {
         let _ = set_run_entry(paths, true);
     }
@@ -449,12 +466,15 @@ pub struct Readiness {
     pub status: Status,
     pub sent: usize,
     pub waiting: usize,
+    /// the one admin prompt (admin.rs)
+    pub admin: crate::admin::State,
 }
 
 pub fn readiness(paths: &Paths) -> Readiness {
     let set_up = installed(paths).is_some();
     let (sent, waiting) = if set_up { sent_and_waiting(paths) } else { (0, 0) };
-    Readiness { set_up, at_sign_in: set_up && run_entry(paths).is_some(), status: if set_up { status(paths) } else { Status::off() }, sent, waiting }
+    let admin = if set_up { crate::admin::state(paths) } else { crate::admin::State::NotSetUp };
+    Readiness { set_up, at_sign_in: set_up && run_entry(paths).is_some(), status: if set_up { status(paths) } else { Status::off() }, sent, waiting, admin }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -545,6 +565,8 @@ pub fn summary(r: &Readiness) -> Vec<String> {
         v.push(p.text.clone());
     } else if !r.status.running() {
         v.push(if r.at_sign_in { "It starts again with Windows, or press Turn on.".into() } else { "Press Turn on to record your AA Classic fights.".into() });
+    } else if let Some(a) = crate::admin::line(r.admin) {
+        v.push(a.into());
     }
     if let Some(l) = &r.status.last {
         if !l.text.is_empty() {
@@ -604,7 +626,7 @@ mod tests {
     fn a_pack_unpacks_into_its_folder_and_nowhere_else() {
         let d = tmp("unpack");
         let (packed, size) = pack(&[("app/recorder.py", b"print(1)"), ("python/pythonw.exe", b"MZ"), ("NOTICE.txt", b"n")]);
-        assert_eq!(unpack(&packed, size, &d.join("x")).unwrap(), 3);
+        assert_eq!(unpack(&packed, size, &d.join("x")).unwrap().0, 3);
         assert_eq!(fs::read(d.join("x").join("app").join("recorder.py")).unwrap(), b"print(1)");
         for bad in ["../evil.txt", "app/../../evil.txt", "/abs.txt", "C:/x.txt", "app\\x.txt", "app/./x", "x. "] {
             let (packed, size) = pack(&[(bad, b"x")]);

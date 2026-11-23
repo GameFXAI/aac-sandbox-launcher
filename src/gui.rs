@@ -459,6 +459,8 @@ enum Msg {
     RecSay(String),
     /// recording was set up and started
     RecDone(Result<String, String>),
+    /// the one admin prompt: what it came to
+    RecAdmin(Result<String, String>),
     /// fights sent to the account's replays
     RecSent(Result<usize, String>),
 }
@@ -500,6 +502,8 @@ enum Action {
     /// recording AA Classic: set up (download, start, start with Windows) or turn on again
     RecOn,
     RecOff,
+    /// the one admin prompt, again after a No (admin.rs)
+    RecAdmin,
 }
 
 /// What a sign-in proves the account with, kept only in memory (the password) or sealed on disk (the token).
@@ -1109,7 +1113,25 @@ impl App {
                         let _ = tx.send(Msg::RecSay(l));
                     };
                     let r = recorder::turn_on(&paths, &say).map(|()| "Recording is on, and starts with Windows from now on.".to_string());
+                    let ok = r.is_ok();
+                    // the one admin prompt, right after the first setup (never again after a No: the card's button)
+                    let admin = if ok { crate::admin::after_setup(&paths, false, &say) } else { None };
                     let _ = tx.send(Msg::RecDone(r));
+                    if let Some(a) = admin {
+                        let _ = tx.send(Msg::RecAdmin(a));
+                    }
+                });
+            }
+            Action::RecAdmin => {
+                self.rec_busy = Some(crate::admin::WHY.into());
+                self.rec_note = None;
+                let (paths, tx) = (self.paths.clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let say = |l: String| {
+                        let _ = tx.send(Msg::RecSay(l));
+                    };
+                    let a = crate::admin::after_setup(&paths, true, &say).unwrap_or_else(|| Ok("Nothing to set up: Windows does not ask when AA Classic starts.".into()));
+                    let _ = tx.send(Msg::RecAdmin(a));
                 });
             }
             Action::RecOff => {
@@ -1254,6 +1276,15 @@ impl App {
                         Err(e) => self.say(format!("recorder: {e}")),
                     }
                     self.rec_note = Some(r.map_err(|e| format!("Recording could not be set up: {e}")));
+                }
+                Msg::RecAdmin(r) => {
+                    self.rec_busy = None;
+                    self.rec_read = None;
+                    match &r {
+                        Ok(l) | Err(l) => self.say(format!("recorder: {l}")),
+                    }
+                    // a No is not an error: recording works, Windows asks at each AA Classic start
+                    self.rec_note = Some(r);
                 }
                 Msg::RecSent(r) => {
                     self.rec_sending = false;
@@ -1514,6 +1545,7 @@ impl App {
         } else if !rec.set_up {
             lines.push(("Play AA Classic as usual: your fights become replays you watch here, hit by hit.".into(), INK));
             lines.push(("Only your own fights are kept, and other players' names are taken out on this PC.".into(), MUTED));
+            lines.push((crate::admin::WHY.into(), MUTED));
         } else {
             let problem = st.problem.is_some();
             for (i, w) in recorder::summary(&rec).into_iter().enumerate() {
@@ -1544,12 +1576,17 @@ impl App {
                         ui.add(egui::Spinner::new());
                     } else if !rec.set_up {
                         if ui.add(egui::Button::new(RichText::new("Set up recording").font(bold_font(14.0)).color(DARK_TEXT)).fill(GOLD))
-                            .on_hover_text("Downloads the recorder, starts it, and starts it with Windows. Windows asks for admin rights each time AA Classic starts: answer Yes.")
+                            .on_hover_text("Downloads the recorder, starts it, and starts it with Windows. Windows then asks once for admin rights, because AA Classic runs as admin: answer Yes, and it never asks again.")
                             .clicked()
                         {
                             *act = Some(Action::RecOn);
                         }
                     } else if st.running() {
+                        if matches!(rec.admin, crate::admin::State::NotSetUp | crate::admin::State::Declined)
+                            && ui.button("Set up admin once").on_hover_text(crate::admin::WHY).clicked()
+                        {
+                            *act = Some(Action::RecAdmin);
+                        }
                         if ui.button("Turn off").on_hover_text("Stops recording and no longer starts it with Windows. What was recorded is kept.").clicked() {
                             *act = Some(Action::RecOff);
                         }

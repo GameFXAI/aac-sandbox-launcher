@@ -121,6 +121,7 @@ pub fn install(r: &Release, bytes: &[u8], exe: &Path) -> Result<(), String> {
     let (new, old) = (with_suffix(exe, "new"), with_suffix(exe, "old"));
     let io = |e: std::io::Error| format!("cannot replace the launcher: {e}");
     fs::write(&new, bytes).map_err(io)?;
+    strip_mark_of_the_web(&new);
     let _ = fs::remove_file(&old);
     fs::rename(exe, &old).map_err(io)?;
     if let Err(e) = fs::rename(&new, exe) {
@@ -143,9 +144,28 @@ fn with_suffix(exe: &Path, suffix: &str) -> PathBuf {
     exe.with_file_name(name)
 }
 
-/// Removes what an earlier update left behind.
+/// Takes the "downloaded from the internet" mark (the `Zone.Identifier` stream) off a file this launcher put in
+/// place, so Windows SmartScreen never asks about it. The launcher's own downloads never get one (only browsers and
+/// Explorer add it), but a launcher taken out of a downloaded zip carries it, and so would what it installs.
+pub fn strip_mark_of_the_web(file: &Path) {
+    let mut stream = file.as_os_str().to_os_string();
+    stream.push(":Zone.Identifier");
+    let w: Vec<u16> = std::os::windows::ffi::OsStrExt::encode_wide(stream.as_os_str()).chain(Some(0)).collect();
+    unsafe { windows_sys::Win32::Storage::FileSystem::DeleteFileW(w.as_ptr()) };
+}
+
+/// Whether a file carries the mark.
+#[cfg(test)]
+pub fn has_mark_of_the_web(file: &Path) -> bool {
+    let mut stream = file.as_os_str().to_os_string();
+    stream.push(":Zone.Identifier");
+    fs::metadata(PathBuf::from(stream)).is_ok()
+}
+
+/// Removes what an earlier update left behind, and the download mark from this exe.
 pub fn clean_up() {
     if let Ok(exe) = std::env::current_exe() {
+        strip_mark_of_the_web(&exe);
         let _ = fs::remove_file(with_suffix(&exe, "old"));
         let _ = fs::remove_file(with_suffix(&exe, "new"));
     }
@@ -257,6 +277,58 @@ mod tests {
         assert_eq!(fs::read(&exe).unwrap(), b"new");
         assert_eq!(fs::read(d.join("launcher.exe.old")).unwrap(), b"old");
         assert!(!d.join("launcher.exe.new").exists());
+    }
+
+    #[test]
+    fn what_the_launcher_installs_never_carries_the_download_mark() {
+        let d = std::env::temp_dir().join(format!("aar-motw-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let exe = d.join("launcher.exe");
+        // a launcher taken out of a downloaded zip: Explorer gave it the mark
+        fs::write(&exe, b"old").unwrap();
+        let mut ads = exe.as_os_str().to_os_string();
+        ads.push(":Zone.Identifier");
+        fs::write(PathBuf::from(&ads), "[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
+        assert!(has_mark_of_the_web(&exe));
+        strip_mark_of_the_web(&exe);
+        assert!(!has_mark_of_the_web(&exe));
+        assert_eq!(fs::read(&exe).unwrap(), b"old", "only the mark goes, not the file");
+        // an update over a marked exe: the new exe has none
+        fs::write(PathBuf::from(&ads), "[ZoneTransfer]\r\nZoneId=3\r\n").unwrap();
+        let body = b"new launcher";
+        let r = Release { version: "9.9.9".into(), url: "https://h/x.exe".into(), size: body.len() as u64, sha256: hex::encode(Sha256::digest(body)) };
+        install(&r, body, &exe).unwrap();
+        assert_eq!(fs::read(&exe).unwrap(), body);
+        assert!(!has_mark_of_the_web(&exe));
+        // a file with no mark: nothing happens
+        strip_mark_of_the_web(&exe);
+        assert!(exe.is_file());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_real_download_carries_no_mark() {
+        // the launcher's own HTTP client (a local server: no network needed)
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            use std::io::Write;
+            let (mut c, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = std::io::Read::read(&mut c, &mut buf);
+            c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello").unwrap();
+        });
+        let bytes = fetch(&format!("http://127.0.0.1:{port}/x.exe"), 100).unwrap();
+        t.join().unwrap();
+        let d = std::env::temp_dir().join(format!("aar-motw-dl-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let exe = d.join("launcher.exe");
+        fs::write(&exe, b"old").unwrap();
+        let r = Release { version: "9.9.9".into(), url: "https://h/x.exe".into(), size: 5, sha256: hex::encode(Sha256::digest(&bytes)) };
+        install(&r, &bytes, &exe).unwrap();
+        assert!(!has_mark_of_the_web(&exe));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

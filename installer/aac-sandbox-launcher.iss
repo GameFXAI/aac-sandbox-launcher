@@ -86,9 +86,10 @@ Type: dirifempty; Name: "{userprograms}\AAEmu Sandbox Launcher"
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent
 
-; recording AA Classic (recorder.rs): stopped and taken out of Windows start before the files go
+; recording AA Classic (recorder.rs): stopped, taken out of Windows start, and its admin task removed (admin.rs: the
+; task removes itself, no prompt) before the files go
 [UninstallRun]
-Filename: "{app}\{#AppExe}"; Parameters: "recorder off"; Flags: runhidden waituntilterminated; RunOnceId: "RecorderOff"
+Filename: "{app}\{#AppExe}"; Parameters: "recorder remove"; Flags: runhidden waituntilterminated; RunOnceId: "RecorderOff"
 
 [Registry]
 ; the recorder's sign-in entry, in case the launcher could not remove it

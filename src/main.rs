@@ -2,6 +2,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod addons;
+mod admin;
 mod art;
 mod cli;
 mod core;

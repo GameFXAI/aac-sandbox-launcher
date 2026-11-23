@@ -185,8 +185,13 @@ iscc /DAppVersion=0.2.1 installer\aac-sandbox-launcher.iss     -> installer\out\
 `release.ps1` does this too, and signs the setup and its uninstaller when signing is set up (`/DSign` and the
 `aareplay` sign tool, `installer\sign.ps1`).
 
-The account API serves that file from `Accounts:DownloadsDir` as `/api/download/AAReplaySetup-<code>.exe`, and the
+The account API serves the file in `Accounts:DownloadsDir` as `/api/download/AAReplaySetup-<code>.exe`, and the
 invite page `/api/join/<code>` links to it (AA Replay server: `Tools/invites/new-invite.ps1`).
+
+Since 0.3.1, the file there is the **bootstrapper** (`bootstrap/`, `docs/bootstrapper.md`), not this installer. It is
+a small `AAReplaySetup.exe` that stays the same across releases, so SmartScreen warns only on that first download. It
+fetches the signed `launcher/setup.json` and the installer that names (`release.ps1` step 5), and runs it `/SILENT`.
+The uninstaller runs `recorder remove`: recording off, and the admin task removed with no prompt (`src/admin.rs`).
 
 Checked 2026-11-22 on the development PC (Inno Setup 6.7.3): a 0.1.1 install upgraded in place; the invite in the file
 name reached the launcher; first start to account, copy, remembered sign-in, settings offer, report and sign out.
