@@ -17,6 +17,9 @@
 //!                                   preview, then moves the ticked parts; --dry-run only shows it
 //!   aac-sandbox-launcher transfer undo [--user U --password P]   puts back what the last transfer replaced
 //!   aac-sandbox-launcher addons [--server <link>]     install the addons the server names (play does this too)
+//!   aac-sandbox-launcher recorder setup|on|off|status|send [--user U (--password P | --token T)]   record AA Classic
+//!                                   and send your fights to your replays (see recorder.rs; send uses the remembered
+//!                                   sign-in when no --user is given)
 //!   aac-sandbox-launcher art                           put the signed AA REPLAY art in our copy (play does this too)
 //!   aac-sandbox-launcher vault                        the client builds kept, by build id
 //!   aac-sandbox-launcher pack export <file> [--build ID]   one build as a file for a friend
@@ -142,6 +145,40 @@ fn go(args: &[String]) -> Result<(), String> {
                 for f in crash_files(&paths, started) {
                     println!("crash file kept in the sandbox: {}", f.display());
                 }
+            }
+        }
+        "recorder" => {
+            use crate::recorder;
+            let say = |l: String| println!("{l}");
+            match args.get(1).map(String::as_str) {
+                Some("setup") | Some("on") => {
+                    recorder::turn_on(&paths, &say)?;
+                    log_line(&paths, "recorder on");
+                    println!("recording is on: it starts with Windows; start AA Classic from its own launcher");
+                }
+                Some("off") => {
+                    recorder::turn_off(&paths)?;
+                    log_line(&paths, "recorder off");
+                    println!("recording is off");
+                }
+                Some("status") | None => {
+                    let r = recorder::readiness(&paths);
+                    println!("{}", recorder::summary(&r).join("
+"));
+                }
+                Some("send") => {
+                    let server = server()?;
+                    let saved = crate::signin::load(&paths).filter(|s| s.server == cfg.login_ip.trim());
+                    let (user, token, password) = (opt(args, "--user"), opt(args, "--token"), opt(args, "--password"));
+                    let n = match (&user, &token, &password, &saved) {
+                        (Some(u), Some(t), _, _) => recorder::send(&paths, &server, u, net::Cred::Session(t))?,
+                        (Some(u), None, Some(p), _) => recorder::send(&paths, &server, u, net::Cred::Password(p))?,
+                        (None, _, _, Some(s)) => recorder::send(&paths, &server, &s.username, net::Cred::Session(&s.session))?,
+                        _ => return Err("sign in with \"Remember me\" in the launcher, or pass --user and --password".into()),
+                    };
+                    println!("{n} fight{} sent to your replays", if n == 1 { "" } else { "s" });
+                }
+                Some(x) => return Err(format!("recorder {x}: the commands are setup, on, off, status and send")),
             }
         }
         "info" => {

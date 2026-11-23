@@ -138,6 +138,7 @@ pub fn explain(code: &str) -> String {
         "BadSession" => "your saved sign-in has run out: enter your password once more".into(),
         "BadReport" => "the report was empty or too large".into(),
         "ReportsFull" => "the server takes no more reports right now".into(),
+        "BadReplay" => "the server could not read that recording as a fight".into(),
         "" => "the server refused the request".into(),
         other => format!("the server refused the request ({other})"),
     }
@@ -253,6 +254,20 @@ pub fn transfer(server: &Server, username: &str, cred: Cred, payload: &serde_jso
         e => failed(e),
     })?;
     r.into_json().map_err(|e| format!("the server's answer was not understood: {e}"))
+}
+
+/// Sends one of the player's own AA Classic fights (recorder.rs) to the account's replays. The fight's names are
+/// "You" and "Opponent" already: no live player's name leaves the PC.
+pub fn upload_replay(server: &Server, username: &str, cred: Cred, fight: &[u8]) -> Result<(), String> {
+    use base64::Engine;
+    let mut body = serde_json::json!({ "username": username, "fight": base64::engine::general_purpose::STANDARD.encode(fight) });
+    cred.put(&mut body);
+    ureq::AgentBuilder::new().timeout(Duration::from_secs(60)).redirects(0).build()
+        .post(&format!("{}/api/replays", api_url(server)?)).send_json(body).map_err(|e| match e {
+            ureq::Error::Status(404, _) => "this server does not take recordings yet".to_string(),
+            e => failed(e),
+        })?;
+    Ok(())
 }
 
 /// A DaruGear build as the launcher shows it before sending: the server fetches and maps it itself.

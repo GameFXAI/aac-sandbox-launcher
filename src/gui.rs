@@ -3,7 +3,7 @@
 
 use crate::core::*;
 use crate::net::{self, Server};
-use crate::{addons, find, install, settings, signin, transfer, update, vault};
+use crate::{addons, find, install, recorder, settings, signin, transfer, update, vault};
 
 /// Is there an AA Classic profile on this PC to bring settings from?
 fn transfer_docs_present() -> bool {
@@ -455,6 +455,12 @@ enum Msg {
     Xfer(XMsg),
     /// the server's /api/info answer
     ServerUp(Result<String, String>),
+    /// recording AA Classic: a step of setting it up
+    RecSay(String),
+    /// recording was set up and started
+    RecDone(Result<String, String>),
+    /// fights sent to the account's replays
+    RecSent(Result<usize, String>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -491,6 +497,9 @@ enum Action {
     BringSettings,
     /// the first start's offer: play without them
     SkipOffer,
+    /// recording AA Classic: set up (download, start, start with Windows) or turn on again
+    RecOn,
+    RecOff,
 }
 
 /// What a sign-in proves the account with, kept only in memory (the password) or sealed on disk (the token).
@@ -585,6 +594,15 @@ struct App {
     report: Option<ReportForm>,
     /// how the AA Classic folder was found, for Settings
     aac_how: Option<&'static str>,
+    /// recording AA Classic, as last read (every two seconds)
+    rec: recorder::Readiness,
+    rec_read: Option<std::time::Instant>,
+    /// setting up: what it is doing
+    rec_busy: Option<String>,
+    /// the last setup or send outcome: Ok(what to say) or Err(what went wrong)
+    rec_note: Option<Result<String, String>>,
+    rec_sending: bool,
+    rec_sent_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -640,6 +658,12 @@ impl App {
             play_after_transfer: false,
             report: None,
             aac_how,
+            rec: Default::default(),
+            rec_read: None,
+            rec_busy: None,
+            rec_note: None,
+            rec_sending: false,
+            rec_sent_at: None,
         };
         if let Some(s) = &a.saved {
             a.cfg.username = s.username.clone();
@@ -1076,10 +1100,50 @@ impl App {
             }
             Action::Transfer => self.start_transfer(),
             Action::UndoTransfer => self.start_undo(),
+            Action::RecOn => {
+                self.rec_busy = Some("Getting the recorder…".into());
+                self.rec_note = None;
+                let (paths, tx) = (self.paths.clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let say = |l: String| {
+                        let _ = tx.send(Msg::RecSay(l));
+                    };
+                    let r = recorder::turn_on(&paths, &say).map(|()| "Recording is on, and starts with Windows from now on.".to_string());
+                    let _ = tx.send(Msg::RecDone(r));
+                });
+            }
+            Action::RecOff => {
+                self.rec_note = Some(recorder::turn_off(&self.paths).map(|()| "Recording is off. What it recorded is kept.".to_string()));
+                self.rec_read = None;
+            }
+        }
+    }
+
+    /// Reads the recorder's status every two seconds, and sends new fights when there is a sign-in.
+    fn poll_recorder(&mut self, ctx: &egui::Context) {
+        if self.rec_read.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+            self.rec = recorder::readiness(&self.paths);
+            self.rec_read = Some(std::time::Instant::now());
+        }
+        if self.rec.set_up || self.rec_busy.is_some() {
+            ctx.request_repaint_after(Duration::from_secs(2));
+        }
+        let due = self.rec_sent_at.is_none_or(|t| t.elapsed() > Duration::from_secs(60));
+        if self.rec.waiting > 0 && !self.rec_sending && due && matches!(Server::parse(&self.cfg.login_ip), Ok(Server::Api { .. })) {
+            if let Some((user, secret)) = self.secret() {
+                self.rec_sending = true;
+                self.rec_sent_at = Some(std::time::Instant::now());
+                let (paths, tx, server) = (self.paths.clone(), self.tx.clone(), Server::parse(&self.cfg.login_ip));
+                std::thread::spawn(move || {
+                    let r = server.and_then(|s| recorder::send(&paths, &s, &user, secret.cred()));
+                    let _ = tx.send(Msg::RecSent(r));
+                });
+            }
         }
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_recorder(ctx);
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Line(l) => {
@@ -1178,6 +1242,35 @@ impl App {
                 Msg::Progress(f) => self.progress = Some(f),
                 Msg::Xfer(m) => self.transfer_msg(m),
                 Msg::ServerUp(r) => self.server_up = Some(r),
+                Msg::RecSay(l) => {
+                    self.say(format!("recorder: {l}"));
+                    self.rec_busy = Some(l);
+                }
+                Msg::RecDone(r) => {
+                    self.rec_busy = None;
+                    self.rec_read = None;
+                    match &r {
+                        Ok(l) => self.say(format!("recorder: {l}")),
+                        Err(e) => self.say(format!("recorder: {e}")),
+                    }
+                    self.rec_note = Some(r.map_err(|e| format!("Recording could not be set up: {e}")));
+                }
+                Msg::RecSent(r) => {
+                    self.rec_sending = false;
+                    self.rec_read = None;
+                    match r {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            let l = format!("{n} new fight{} sent to your replays: watch {} in the arena's replay player.", if n == 1 { "" } else { "s" }, if n == 1 { "it" } else { "them" });
+                            self.say(format!("recorder: {l}"));
+                            self.rec_note = Some(Ok(l));
+                        }
+                        Err(e) => {
+                            self.say(format!("recorder: sending fights: {e}"));
+                            self.rec_note = Some(Err(format!("Your fights could not be sent yet: {e}. They are tried again in a minute.")));
+                        }
+                    }
+                }
                 Msg::Installed(r) => {
                     self.busy = false;
                     self.installing = false;
@@ -1291,7 +1384,7 @@ impl App {
 
     fn play_tab(&mut self, ui: &mut egui::Ui, body: Rect, act: &mut Option<Action>) {
         // left: the pitch
-        let hero = Rect::from_min_size(body.min + vec2(56.0, 64.0), vec2(520.0, body.height() - 80.0));
+        let hero = Rect::from_min_size(body.min + vec2(56.0, 64.0), vec2(610.0, body.height() - 80.0));
         ui.scope_builder(UiBuilder::new().max_rect(hero).layout(Layout::top_down(Align::Min)), |ui| {
             ui.label(RichText::new("ARENA  ·  REPLAYS  ·  PRACTICE").font(bold_font(12.5)).color(GOLD).extra_letter_spacing(3.0));
             ui.add_space(2.0);
@@ -1302,11 +1395,12 @@ impl App {
             });
             ui.add_space(2.0);
             ui.label(RichText::new("Fight in the arena with your friends, then watch every fight back and get better.").size(16.0).color(MUTED));
-            ui.add_space(26.0);
+            ui.add_space(14.0);
             tick_row(ui, "Any build, in seconds", "Wear a DaruGear build or a class setup. Dying costs nothing.");
             tick_row(ui, "Every fight recorded", "Watch it back in the game: pause, slow it down, see every hit.");
             tick_row(ui, "Kept apart from AA Classic", "Own copy, own folder, own account. AA Classic is never changed.");
         });
+        self.recording_card(ui, body, act);
         if self.offer {
             return self.offer_card(ui, body, act);
         }
@@ -1392,6 +1486,86 @@ impl App {
         if enter && !self.busy && !self.asking && self.child.is_none() {
             *act = Some(Action::Play);
         }
+    }
+
+    /// Recording AA Classic: one line of what it is doing, then what is wrong with its fix. Never a silent half-state.
+    fn recording_card(&mut self, ui: &mut egui::Ui, body: Rect, act: &mut Option<Action>) {
+        let r = Rect::from_min_size(pos2(body.left() + 48.0, body.bottom() - 148.0), vec2(610.0, 140.0));
+        card(ui.painter(), r);
+        let rec = self.rec.clone();
+        let st = &rec.status;
+        let (dot, head) = if self.rec_busy.is_some() {
+            (AMBER, "Setting up recording")
+        } else if !rec.set_up {
+            (MUTED, "Record your AA Classic fights")
+        } else {
+            match st.state.as_str() {
+                "recording" => (RED, "Recording"),
+                "ready" => (GREEN, "Ready to record"),
+                "starting" => (AMBER, "Starting"),
+                "problem" => (AMBER, "Not recording"),
+                _ => (MUTED, "Recording is off"),
+            }
+        };
+        let mut lines: Vec<(String, Color32)> = Vec::new();
+        if let Some(b) = &self.rec_busy {
+            lines.push((b.clone(), INK));
+            lines.push(("The recorder is about 47 MB. Nothing is installed outside the launcher's folder.".into(), MUTED));
+        } else if !rec.set_up {
+            lines.push(("Play AA Classic as usual: your fights become replays you watch here, hit by hit.".into(), INK));
+            lines.push(("Only your own fights are kept, and other players' names are taken out on this PC.".into(), MUTED));
+        } else {
+            let problem = st.problem.is_some();
+            for (i, w) in recorder::summary(&rec).into_iter().enumerate() {
+                // with a problem the heading says "Not recording": the problem and its fix come first
+                if i == 0 && problem {
+                    continue;
+                }
+                let c = if i == 1 && problem { AMBER } else if i == 0 { INK } else { MUTED };
+                lines.push((w, c));
+            }
+        }
+        // three lines fit: what it is doing or what is wrong, and the last thing pressed or sent
+        if let Some(n) = &self.rec_note {
+            let at = lines.len().min(1);
+            match n {
+                Ok(t) => lines.insert(at, (t.clone(), GREEN)),
+                Err(t) => lines.insert(at, (t.clone(), RED)),
+            }
+        }
+        ui.scope_builder(UiBuilder::new().max_rect(r.shrink2(vec2(24.0, 16.0))).layout(Layout::top_down(Align::Min)), |ui| {
+            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.horizontal(|ui| {
+                let (d, _) = ui.allocate_exact_size(vec2(12.0, 22.0), Sense::hover());
+                ui.painter().circle_filled(d.center(), 5.0, dot);
+                ui.label(RichText::new(head).font(bold_font(16.0)).color(INK));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if self.rec_busy.is_some() {
+                        ui.add(egui::Spinner::new());
+                    } else if !rec.set_up {
+                        if ui.add(egui::Button::new(RichText::new("Set up recording").font(bold_font(14.0)).color(DARK_TEXT)).fill(GOLD))
+                            .on_hover_text("Downloads the recorder, starts it, and starts it with Windows. Windows asks for admin rights each time AA Classic starts: answer Yes.")
+                            .clicked()
+                        {
+                            *act = Some(Action::RecOn);
+                        }
+                    } else if st.running() {
+                        if ui.button("Turn off").on_hover_text("Stops recording and no longer starts it with Windows. What was recorded is kept.").clicked() {
+                            *act = Some(Action::RecOff);
+                        }
+                    } else if ui.add(egui::Button::new(RichText::new("Turn on").font(bold_font(14.0)).color(DARK_TEXT)).fill(GOLD)).clicked() {
+                        *act = Some(Action::RecOn);
+                    }
+                    if rec.set_up && ui.add(egui::Label::new(RichText::new("Recordings folder").size(12.5).color(BLUE).underline()).sense(Sense::click())).clicked() {
+                        let _ = std::process::Command::new("explorer").arg(recorder::data_dir(&self.paths)).spawn();
+                    }
+                });
+            });
+            ui.add_space(2.0);
+            for (t, c) in lines.iter().take(3) {
+                ui.add(egui::Label::new(RichText::new(t.as_str()).size(13.0).color(*c)).wrap());
+            }
+        });
     }
 
     /// The first start's one-time offer: AA Classic's settings into this client, then the game.

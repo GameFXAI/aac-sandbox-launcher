@@ -11,6 +11,7 @@ mod install;
 mod ldb;
 mod net;
 mod pak;
+mod recorder;
 mod recording;
 mod settings;
 mod signin;
