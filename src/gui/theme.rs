@@ -54,17 +54,17 @@ pub fn bold_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
 }
 
-/// The bundled fonts (assets/fonts, each with its license): Open Sans for text, Open Sans SemiBold for "bold" and
-/// TeX Gyre Pagella Bold, a Palatino clone, for titles. Nothing is read from Windows' font folder.
-static UI_FONT: &[u8] = include_bytes!("../../assets/fonts/OpenSans-Regular.ttf");
-static BOLD_FONT: &[u8] = include_bytes!("../../assets/fonts/OpenSans-SemiBold.ttf");
+/// The bundled fonts (assets/fonts, GUST font license): TeX Gyre Pagella, a Palatino clone, Regular for text and Bold
+/// for "bold" and titles, so every word is in one serif as the game's interface is. Nothing is read from Windows'
+/// font folder.
+static UI_FONT: &[u8] = include_bytes!("../../assets/fonts/texgyrepagella-regular.otf");
+static BOLD_FONT: &[u8] = include_bytes!("../../assets/fonts/texgyrepagella-bold.otf");
 static TITLE_FONT: &[u8] = include_bytes!("../../assets/fonts/texgyrepagella-bold.otf");
 
 /// Text in the "ui" font, and the "bold" and "title" families every screen asks for by name.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut f = egui::FontDefinitions::default();
-    // Open Sans runs about 5% wider than Segoe UI: at 0.95 lines measure (and wrap) as they did with Segoe UI
-    for (key, bytes, scale) in [("ui", UI_FONT, 0.95), ("bold", BOLD_FONT, 0.95), ("title", TITLE_FONT, 1.0)] {
+    for (key, bytes, scale) in [("ui", UI_FONT, 1.0), ("bold", BOLD_FONT, 1.0), ("title", TITLE_FONT, 1.0)] {
         let tweak = egui::epaint::text::FontTweak { scale, ..Default::default() };
         f.font_data.insert(key.into(), Arc::new(FontData::from_static(bytes).tweak(tweak)));
     }
