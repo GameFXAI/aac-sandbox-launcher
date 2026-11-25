@@ -9,6 +9,7 @@ mod core;
 mod find;
 mod gui;
 mod install;
+mod integrity;
 mod ldb;
 mod library;
 mod net;

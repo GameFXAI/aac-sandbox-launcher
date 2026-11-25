@@ -246,9 +246,14 @@ impl App {
         if let Some(r) = self.update.clone() {
             self.busy = true;
             self.say(format!("downloading launcher {} ...", r.version));
-            let tx = self.tx.clone();
+            let (tx, paths) = (self.tx.clone(), self.paths.clone());
             std::thread::spawn(move || {
-                let _ = tx.send(Event::Updated(update::apply(&r)));
+                let done = update::apply(&r);
+                // the signed release's hash is what the next start compares itself with (integrity.rs)
+                if let Ok(exe) = &done {
+                    let _ = crate::integrity::record(&paths, exe, &r.version, &r.sha256);
+                }
+                let _ = tx.send(Event::Updated(done));
             });
         }
     }

@@ -33,6 +33,25 @@ says "Welcome back" and PLAY needs no password. The server keeps only the token'
 its last use and 180 days at most, and an account has at most 5. "Not you? Sign out" ends the token on the server too.
 A token the server no longer takes (ran out, signed out everywhere, banned) is forgotten and the password is asked again.
 
+## Replays
+
+**Replays** in the top bar lists the account's recordings as the server keeps them: newest first, with Play (starts
+the game and opens that recording in the arena's replay player) and Delete (asks first; it cannot be undone). The plan
+badge next to it says FREE or REPLAY+ (amber in its last five days); Settings → Account shows the plan, its end date and
+"Contact to upgrade" when the server names an upgrade page. Recordings past the plan's cap are shown dimmed with a lock,
+not hidden. The last list is kept in `recordings\library.json` so the screen fills at once; it is forgotten at sign-out.
+Play leaves `pending_watch.txt` in the `aac_replay` addon folder, which the addon takes once when the game loads.
+
+Nothing here is trusted by the server: it works out the account from the sign-in, the plan and cap from its own
+database, and deletes only a number in that account's own list.
+
+## Install check
+
+A release build records its own SHA-256 (or, after an update, the signed release's) in `installed.json` in the data
+folder and compares it at every start. When this exe and version were recorded with another hash, the bottom bar says
+"This install looks modified" and asks for a reinstall; Play still works. A new version, another folder or a debug
+build is never flagged.
+
 ## Finding AA Classic
 
 Without a saved folder the launcher looks, in this order: the uninstall entries of AA Classic's installer (in all four
@@ -108,7 +127,8 @@ window icon (art.rs). AA Classic's folder is never touched.
 - **What it changes, in our copy only:** `clienta-replay-art\overlay.bin` + `overlay.json` (the new game files, a
   file table pointing at them and the header, built on this PC against its own `game_pak`, which is only read);
   `binNextersion.dll`, the loader that makes the client read `game_pak` + `overlay.bin` as one archive; and the
-  splash and icon resources in `binNextes_ru.dll`, `res_us.dll` and `archeage.exe`, only when those are the build
+  splash and icon resources in `binNext
+es_ru.dll`, `res_us.dll` and `archeage.exe`, only when those are the build
   the art was made for (the originals are kept in `aa-replay-art\originals`).
 - **After an AA Classic update.** A new `binNext` is copied as before, which drops the loader and the resources; a
   changed `game_pak` turns the loader off by itself (the length no longer matches `overlay.json`). The next PLAY sees

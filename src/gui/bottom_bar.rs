@@ -21,6 +21,9 @@ impl App {
         };
         let (dot, title, sub, button, action): (Color32, String, String, &str, Option<Action>) = if self.asking {
             (GOLD, "Asking the server".into(), self.log.last().cloned().unwrap_or_default(), "WAIT", None)
+        } else if let (Some(m), Tab::Play, None, None) = (self.modified, self.tab, &self.child, &self.hint) {
+            // said every time, not once: Play still works (the server decides what an account may do)
+            (RED, "This install looks modified".into(), m.to_string(), "PLAY", Some(Action::Play))
         } else if self.offer && self.tab == Tab::Play {
             (GOLD, "Before your first game".into(), "Bring your AA Classic settings over, or skip it: Settings can do it any time.".into(), "JUST PLAY", Some(Action::SkipOffer))
         } else if self.xfer.working && self.play_after_transfer {

@@ -134,6 +134,8 @@ struct App {
     xfer: Xfer,
     /// what went wrong with the last thing the player pressed: shown in the bottom bar until the next press
     hint: Option<String>,
+    /// integrity.rs: this exe is not the build that was installed here (kept for the whole run)
+    modified: Option<&'static str>,
     /// the server's answer to /api/info: Ok(name) when it is up
     server_up: Option<Result<String, String>>,
     /// the sign-in card shows the server address field
@@ -179,6 +181,7 @@ impl App {
             }
         }
         let (tx, rx) = channel();
+        let modified = crate::integrity::check(&paths);
         let saved = signin::load(&paths).filter(|s| s.server == cfg.login_ip.trim());
         let baked_invite = signin::pending_invite(&paths);
         let mut a = App {
@@ -209,6 +212,7 @@ impl App {
             confirm: None,
             xfer: Xfer::default(),
             hint: None,
+            modified,
             server_up: None,
             remember: true,
             saved,
