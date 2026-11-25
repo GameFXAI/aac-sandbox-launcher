@@ -1,9 +1,14 @@
 //! The "Transfer from AA Classic" screen: a checklist of what can move, a preview of the selected line, the two
 //! sources only the player can give (a recording and a DaruGear link), and Undo.
 
-use super::*;
+use crate::gui::events::Event;
+use crate::gui::theme::*;
+use crate::gui::{Action, App, Secret, Tab};
+use crate::net::{self, Server};
 use crate::{recording, transfer};
+use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Margin, Painter, Pos2, Rect, RichText, Sense, Stroke, TextEdit, UiBuilder, pos2, vec2};
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// What the screen keeps between frames.
 #[derive(Default)]
@@ -26,7 +31,8 @@ pub struct Xfer {
     pub result: Option<(bool, String, Vec<String>)>,
 }
 
-pub enum XMsg {
+/// The transfer screen's background threads -> window (inside `Event::Transfer`).
+pub enum TransferEvent {
     Scanned(Box<transfer::Scan>),
     Build(String, Result<net::Build, String>),
     Done(Result<Vec<String>, String>),
@@ -106,7 +112,7 @@ fn caption(ui: &mut egui::Ui, text: &str) {
 
 impl App {
     /// Opens the screen: looks at AA Classic's files and the newest recording, and at the clipboard for a link.
-    pub(super) fn open_transfer(&mut self) {
+    pub(in crate::gui) fn open_transfer(&mut self) {
         self.tab = Tab::Transfer;
         if self.xfer.link.trim().is_empty() {
             // only a DaruGear link is taken from the clipboard, never other text
@@ -121,7 +127,7 @@ impl App {
         self.check_link();
     }
 
-    pub(super) fn rescan(&mut self) {
+    pub(in crate::gui) fn rescan(&mut self) {
         if self.xfer.scanning {
             return;
         }
@@ -129,7 +135,7 @@ impl App {
         let (paths, tx, rec) = (self.paths.clone(), self.tx.clone(), self.xfer.recording.clone());
         std::thread::spawn(move || {
             let s = transfer::scan(&paths, transfer::real_docs().as_deref(), rec.as_deref());
-            let _ = tx.send(Msg::Xfer(XMsg::Scanned(Box::new(s))));
+            let _ = tx.send(Event::Transfer(TransferEvent::Scanned(Box::new(s))));
         });
     }
 
@@ -150,7 +156,7 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let r = net::daru(&code);
-            let _ = tx.send(Msg::Xfer(XMsg::Build(code, r)));
+            let _ = tx.send(Event::Transfer(TransferEvent::Build(code, r)));
         });
     }
 
@@ -165,9 +171,9 @@ impl App {
         }
     }
 
-    pub(super) fn transfer_msg(&mut self, m: XMsg) {
+    pub(in crate::gui) fn transfer_event(&mut self, m: TransferEvent) {
         match m {
-            XMsg::Scanned(s) => {
+            TransferEvent::Scanned(s) => {
                 self.xfer.scanning = false;
                 let mut s = *s;
                 s.build = self.xfer.build.clone();
@@ -175,7 +181,7 @@ impl App {
                 self.xfer.scan = Some(s);
                 self.retick();
             }
-            XMsg::Build(code, r) => {
+            TransferEvent::Build(code, r) => {
                 if self.xfer.fetching.as_deref() == Some(code.as_str()) {
                     self.xfer.fetching = None;
                 }
@@ -198,7 +204,7 @@ impl App {
                 }
                 self.retick();
             }
-            XMsg::Done(r) => {
+            TransferEvent::Done(r) => {
                 self.xfer.working = false;
                 // the first start's offer: the game starts once the setup is in place, moved or not
                 if std::mem::take(&mut self.play_after_transfer) {
@@ -219,7 +225,7 @@ impl App {
                 }
                 self.rescan();
             }
-            XMsg::Undone(r) => {
+            TransferEvent::Undone(r) => {
                 self.xfer.working = false;
                 match r {
                     Ok(lines) => {
@@ -237,7 +243,7 @@ impl App {
     }
 
     /// Ticks every line that can move (the first start's offer: everything there is).
-    pub(super) fn retick_all(&mut self) {
+    pub(in crate::gui) fn retick_all(&mut self) {
         self.xfer.touched.clear();
         self.retick();
     }
@@ -253,7 +259,7 @@ impl App {
         self.xfer.ticks = t;
     }
 
-    pub(super) fn start_transfer(&mut self) {
+    pub(in crate::gui) fn start_transfer(&mut self) {
         let Some(scan) = self.xfer.scan.clone() else { return };
         let ticks = self.xfer.ticked();
         if ticks.is_empty() {
@@ -294,11 +300,11 @@ impl App {
                 transfer::record(&paths, &ticks, applied.backup, &server, &user)?;
                 Ok(lines)
             })();
-            let _ = tx.send(Msg::Xfer(XMsg::Done(r)));
+            let _ = tx.send(Event::Transfer(TransferEvent::Done(r)));
         });
     }
 
-    pub(super) fn start_undo(&mut self) {
+    pub(in crate::gui) fn start_undo(&mut self) {
         let Some(last) = transfer::last(&self.paths) else { return };
         let account = if !last.server.is_empty() {
             match (Server::parse(&last.server), self.secret()) {
@@ -322,13 +328,13 @@ impl App {
                 }
                 Ok(lines)
             })();
-            let _ = tx.send(Msg::Xfer(XMsg::Undone(r)));
+            let _ = tx.send(Event::Transfer(TransferEvent::Undone(r)));
         });
     }
 
     // --- the screen ----------------------------------------------------------------------------------------------
 
-    pub(super) fn transfer_tab(&mut self, ui: &mut egui::Ui, body: Rect, act: &mut Option<Action>) {
+    pub(in crate::gui) fn transfer_tab(&mut self, ui: &mut egui::Ui, body: Rect, act: &mut Option<Action>) {
         let cardr = Rect::from_center_size(body.center() + vec2(0.0, 4.0), vec2(body.width() - 80.0, body.height() - 36.0));
         card(ui.painter(), cardr);
         let inner = cardr.shrink2(vec2(30.0, 20.0));
@@ -518,7 +524,7 @@ impl App {
     }
 
     /// The bottom bar's line while the screen is open: (dot, title, sub, button, action).
-    pub(super) fn transfer_status(&self) -> (Color32, String, String, &'static str, Option<Action>) {
+    pub(in crate::gui) fn transfer_status(&self) -> (Color32, String, String, &'static str, Option<Action>) {
         if self.xfer.working {
             return (GOLD, "Moving your setup".into(), "Writing into this client's profile and sending your account's part…".into(), "WAIT", None);
         }
