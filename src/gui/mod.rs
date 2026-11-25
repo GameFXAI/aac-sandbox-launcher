@@ -15,6 +15,7 @@ use crate::{find, library, recorder, settings, signin, transfer, update};
 
 mod bottom_bar;
 mod events;
+mod pictures;
 mod report;
 mod screens;
 mod tasks;
@@ -163,12 +164,15 @@ struct App {
     rec_sent_at: Option<std::time::Instant>,
     /// the replay Library (screens/library.rs)
     lib: Lib,
+    /// the paintings behind the screens and on the cards (pictures.rs)
+    pics: pictures::Pictures,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext) -> App {
         install_fonts(&cc.egui_ctx);
         install_style(&cc.egui_ctx);
+        let pics = pictures::Pictures::load(&cc.egui_ctx);
         let paths = Paths::new();
         let mut cfg = Config::load(&paths);
         let mut aac_how = None;
@@ -228,6 +232,7 @@ impl App {
             rec_sending: false,
             rec_sent_at: None,
             lib: Lib::default(),
+            pics,
         };
         if let Some(s) = &a.saved {
             a.cfg.username = s.username.clone();
@@ -436,8 +441,9 @@ impl App {
 
     fn top_bar(&mut self, ui: &mut egui::Ui, rect: Rect, act: &mut Option<Action>) {
         let p = ui.painter().clone();
-        p.rect_filled(rect, 0.0, rgba(4, 6, 10, 190));
-        p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, gold_a(60)));
+        vgrad(&p, rect, rgba(20, 15, 11, 255), rgba(10, 8, 6, 255));
+        hgrad(&p, Rect::from_min_max(pos2(rect.left(), rect.bottom() - 1.0), pos2(rect.center().x, rect.bottom())), gold_a(10), gold_a(110));
+        hgrad(&p, Rect::from_min_max(pos2(rect.center().x, rect.bottom() - 1.0), rect.right_bottom()), gold_a(110), gold_a(10));
         let drag = ui.interact(rect, ui.scope_id().with("titlebar"), Sense::click_and_drag());
         if drag.drag_started_by(egui::PointerButton::Primary) {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
@@ -446,10 +452,10 @@ impl App {
         // emblem: a gold diamond with a smaller one inside
         let e = pos2(rect.left() + 34.0, rect.center().y);
         let dia = |r: f32| vec![e + vec2(0.0, -r), e + vec2(r, 0.0), e + vec2(0.0, r), e + vec2(-r, 0.0)];
-        p.add(Shape::convex_polygon(dia(14.0), gold_a(30), Stroke::new(1.5, GOLD)));
-        p.add(Shape::convex_polygon(dia(6.0), VIOLET, Stroke::NONE));
-        let aa = p.text(pos2(rect.left() + 58.0, rect.center().y - 1.0), Align2::LEFT_CENTER, "AA", title_font(22.0), INK);
-        let sb = p.text(pos2(aa.right() + 6.0, rect.center().y - 1.0), Align2::LEFT_CENTER, "REPLAY", title_font(22.0), GOLD);
+        p.add(Shape::convex_polygon(dia(14.0), gold_a(24), Stroke::new(1.5, GOLD)));
+        p.add(Shape::convex_polygon(dia(6.5), GOLD_DEEP, Stroke::new(1.0, GOLD_HI)));
+        let aa = p.text(pos2(rect.left() + 58.0, rect.center().y), Align2::LEFT_CENTER, "AA", title_font(23.0), INK);
+        let sb = gold_title(&p, pos2(aa.right() + 7.0, rect.center().y), Align2::LEFT_CENTER, "Replay", title_font(23.0));
 
         let tabs = Rect::from_min_max(pos2(sb.right() + 40.0, rect.top()), rect.max);
         ui.scope_builder(UiBuilder::new().max_rect(tabs).layout(Layout::left_to_right(Align::Center)), |ui| {
@@ -479,7 +485,7 @@ impl App {
                     }
                     ui.add_space(8.0);
                 }
-                if ui.add(egui::Button::new(RichText::new("Report a problem").size(13.0).color(INK))).on_hover_text("Tell us what went wrong. The launcher's and the game's logs go with it (no password is in them).").clicked() {
+                if ui.add(egui::Button::new(RichText::new("Report a problem").size(14.0).color(INK))).on_hover_text("Tell us what went wrong. The launcher's and the game's logs go with it (no password is in them).").clicked() {
                     *act = Some(Action::Report);
                 }
                 if let Some(r) = &self.update {
@@ -507,6 +513,14 @@ impl eframe::App for App {
         let top = Rect::from_min_size(full.min, vec2(full.width(), 52.0));
         let bottom = Rect::from_min_max(pos2(full.left(), full.bottom() - 100.0), full.max);
         let body = Rect::from_min_max(pos2(full.left(), top.bottom()), pos2(full.right(), bottom.top()));
+
+        // the screen's painting under everything in the body
+        let (art, light) = match self.tab {
+            Tab::Play => (&self.pics.hero_play, 1.0),
+            Tab::Library => (&self.pics.hero_replays, 0.62),
+            _ => (&self.pics.hero_more, 0.4),
+        };
+        scene(&p, art, body, light);
 
         let mut act = None;
         self.top_bar(root, top, &mut act);

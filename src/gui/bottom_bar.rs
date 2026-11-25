@@ -11,8 +11,9 @@ use std::time::Duration;
 impl App {
     pub(in crate::gui) fn bottom_bar(&mut self, ui: &mut egui::Ui, rect: Rect, act: &mut Option<Action>) {
         let p = ui.painter().clone();
-        vgrad(&p, rect, rgba(6, 8, 13, 225), rgba(3, 4, 7, 245));
-        p.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, gold_a(80)));
+        vgrad(&p, rect, rgba(18, 14, 10, 250), rgba(9, 7, 5, 255));
+        hgrad(&p, Rect::from_min_max(rect.left_top(), pos2(rect.center().x, rect.top() + 1.0)), gold_a(10), gold_a(120));
+        hgrad(&p, Rect::from_min_max(pos2(rect.center().x, rect.top()), pos2(rect.right(), rect.top() + 1.0)), gold_a(120), gold_a(10));
 
         let mode = match self.cfg.mode {
             Mode::Standard => "Standard install",
@@ -98,12 +99,13 @@ impl App {
             p.circle_filled(pos2(x, y), 4.0 + i as f32 * 2.5, Color32::from_rgba_unmultiplied(dot.r(), dot.g(), dot.b(), 18));
         }
         p.circle_filled(pos2(x, y), 4.5, dot);
-        p.text(pos2(x + 18.0, y), Align2::LEFT_CENTER, &title, bold_font(17.0), INK);
+        p.text(pos2(x + 18.0, y), Align2::LEFT_CENTER, &title, title_font(19.0), INK);
         let sub_g = p.layout(sub, FontId::proportional(13.0), MUTED, rect.width() - 420.0);
-        p.galley(pos2(x + 18.0, y + 14.0), sub_g, MUTED);
+        p.galley(pos2(x + 18.0, y + 15.0), sub_g, MUTED);
         if self.busy {
             let bar = Rect::from_min_size(pos2(x + 18.0, rect.bottom() - 22.0), vec2(rect.width() - 420.0, 6.0));
-            p.rect_filled(bar, 3.0, rgba(255, 255, 255, 18));
+            p.rect_filled(bar, 3.0, rgba(0, 0, 0, 150));
+            p.rect_stroke(bar, 3.0, Stroke::new(1.0, gold_a(40)), egui::StrokeKind::Outside);
             let f = match self.progress {
                 Some(v) => v,
                 None => ((ui.input(|i| i.time) as f32 * 0.6).sin() * 0.5 + 0.5) * 0.9 + 0.05,

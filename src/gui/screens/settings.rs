@@ -15,7 +15,7 @@ impl App {
         let locked = self.busy || self.child.is_some();
         ui.scope_builder(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Settings").font(title_font(26.0)).color(INK));
+                ui.label(RichText::new("Settings").font(title_font(28.0)).color(GOLD_HI));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(RichText::new(format!("Launcher {}", update::VERSION)).size(12.0).color(MUTED));
                 });
@@ -66,7 +66,7 @@ impl App {
             ui.label(RichText::new("AA CLASSIC FOLDER").size(11.5).color(MUTED).extra_letter_spacing(1.2));
             ui.horizontal(|ui| {
                 let shown = self.cfg.aac_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(not chosen)".into());
-                egui::Frame::new().fill(Color32::from_rgb(12, 16, 23)).stroke(Stroke::new(1.0, Color32::from_rgb(54, 62, 78))).corner_radius(3).inner_margin(Margin::symmetric(10, 7)).show(ui, |ui| {
+                egui::Frame::new().fill(Color32::from_rgb(10, 8, 6)).stroke(Stroke::new(1.0, gold_a(50))).corner_radius(3).inner_margin(Margin::symmetric(10, 7)).show(ui, |ui| {
                     ui.set_width(inner.width() - 150.0);
                     ui.label(RichText::new(shown).monospace().color(INK));
                 });

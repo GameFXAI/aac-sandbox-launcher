@@ -11,7 +11,7 @@ impl App {
         let inner = cardr.shrink2(vec2(28.0, 22.0));
         ui.scope_builder(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Log").font(title_font(26.0)).color(INK));
+                ui.label(RichText::new("Log").font(title_font(28.0)).color(GOLD_HI));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Back").clicked() {
                         self.tab = Tab::Settings;

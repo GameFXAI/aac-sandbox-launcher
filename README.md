@@ -116,6 +116,11 @@ Checked 2026-11-21 against a local login server: the arena pack (`pts_menu`, 174
 
 ## The AA REPLAY art
 
+The launcher's own look follows the in-game Arena window: warm black glass, antique gold, the title serif, and the
+owner's AA REPLAY paintings behind each screen and on each recording's card. Those pictures are crops of the art kit's
+paintings (`Art/aa-replay-kit/generated` in the server repo), cut by `python -I tools/make_art.py <that folder>` into
+`assets/art/*.jpg` and embedded in the exe (gui/pictures.rs). Nothing of AA Classic's art is in them.
+
 Before every play the launcher puts the AA REPLAY pictures in its own copy of the client: the loading screens, the
 login logo and server-select and rating backgrounds, the loading bar, the intro movie, the startup splash and the
 window icon (art.rs). AA Classic's folder is never touched.

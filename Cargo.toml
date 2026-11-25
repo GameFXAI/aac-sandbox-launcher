@@ -12,6 +12,7 @@ ed25519-dalek = "2"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
 getrandom = "0.2"
 hex = "0.4.3"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 md-5 = "0.10"
 rfd = "0.18.0"
 ruzstd = "0.9.1"

@@ -89,7 +89,7 @@ impl App {
             let _ = ui.interact(ctx.content_rect(), ui.scope_id().with("backdrop"), Sense::click_and_drag());
             card(ui.painter(), r);
             ui.scope_builder(UiBuilder::new().max_rect(r.shrink2(vec2(28.0, 22.0))).layout(Layout::top_down(Align::Min)), |ui| {
-                ui.label(RichText::new("Report a problem").font(title_font(24.0)).color(INK));
+                ui.label(RichText::new("Report a problem").font(title_font(26.0)).color(GOLD_HI));
                 let ask = ui.label(RichText::new("What happened, and what were you doing? It goes to the people running the test.").size(13.0).color(MUTED));
                 ui.add_space(6.0);
                 ui.add(TextEdit::multiline(&mut form.text).desired_rows(6).desired_width(f32::INFINITY).hint_text("e.g. the game closed when I entered the arena"))
@@ -116,7 +116,7 @@ impl App {
                 ui.horizontal(|ui| {
                     let sent = matches!(form.done, Some(Ok(_)));
                     let can = !form.sending && !sent && (!form.text.trim().is_empty() || form.logs);
-                    if ui.add_enabled(can, egui::Button::new(RichText::new("Send").font(bold_font(15.0)).color(DARK_TEXT)).fill(GOLD)).clicked() {
+                    if ui.add_enabled(can, egui::Button::new(RichText::new("Send").color(DARK_TEXT)).fill(GOLD)).clicked() {
                         *act = Some(Action::SendReport);
                     }
                     if ui.add_enabled(!form.sending, egui::Button::new(if sent { "Close" } else { "Cancel" })).clicked() {

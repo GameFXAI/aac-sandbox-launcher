@@ -1,27 +1,76 @@
 //! The launcher's own widgets: top-bar tabs and buttons, the big play button, captioned fields and cards.
 
 use super::theme::*;
-use eframe::egui::{self, Align2, Color32, FontId, Margin, RichText, Sense, Shape, Stroke, TextEdit, Vec2, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Margin, Rect, RichText, Sense, Shape, Stroke, TextEdit, Vec2, pos2, vec2};
 
+/// A tab in the top bar, as the Arena window's: the name in the title serif, gold with a glowing gold line under it
+/// when picked.
 pub fn nav_tab(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
-    let font = bold_font(14.0);
-    let galley = ui.painter().layout_no_wrap(label.to_uppercase(), font.clone(), INK);
-    let size = vec2(galley.size().x + 28.0, 52.0);
+    let font = title_font(17.0);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), INK);
+    let size = vec2(galley.size().x + 40.0, 52.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
     let color = if selected {
-        GOLD
+        GOLD_HI
     } else if resp.hovered() {
         INK
     } else {
-        MUTED
+        rgba(214, 200, 176, 255)
     };
     let p = ui.painter();
-    p.text(rect.center(), Align2::CENTER_CENTER, label.to_uppercase(), font, color);
     if selected {
-        let y = rect.bottom() - 2.0;
-        p.line_segment([pos2(rect.left() + 12.0, y), pos2(rect.right() - 12.0, y)], Stroke::new(2.0, GOLD));
+        // a glow rising from the line, and the line itself fading out at both ends
+        let base = rect.bottom() - 2.0;
+        vgrad(p, Rect::from_min_max(pos2(rect.left() + 8.0, base - 18.0), pos2(rect.right() - 8.0, base)), gold_a(0), gold_a(34));
+        let mid = rect.center().x;
+        hgrad(p, Rect::from_min_max(pos2(rect.left() + 4.0, base), pos2(mid, base + 2.0)), gold_a(0), GOLD);
+        hgrad(p, Rect::from_min_max(pos2(mid, base), pos2(rect.right() - 4.0, base + 2.0)), GOLD, gold_a(0));
     }
+    p.text(rect.center() + vec2(0.0, 1.0), Align2::CENTER_CENTER, label, font, color);
+    resp
+}
+
+/// The game's gold button (Apply, Enter the ring): a gold bar with dark serif words. `width` 0 fits the words.
+pub fn gold_button(ui: &mut egui::Ui, label: &str, width: f32, height: f32, enabled: bool) -> egui::Response {
+    let font = title_font((height * 0.5).clamp(13.0, 22.0));
+    let g = ui.painter().layout_no_wrap(label.to_string(), font.clone(), DARK_TEXT);
+    let w = if width > 0.0 { width } else { g.size().x + height * 1.3 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), if enabled { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    let p = ui.painter();
+    let (hov, down) = (enabled && resp.hovered(), enabled && resp.is_pointer_button_down_on());
+    let (top, bottom, text) = if !enabled {
+        (rgba(96, 86, 72, 255), rgba(66, 58, 48, 255), rgba(40, 34, 28, 255))
+    } else if down {
+        (rgba(222, 172, 96, 255), rgba(196, 142, 64, 255), DARK_TEXT)
+    } else if hov {
+        (rgba(255, 238, 186, 255), rgba(232, 178, 96, 255), DARK_TEXT)
+    } else {
+        (rgba(250, 224, 158, 255), rgba(214, 156, 76, 255), DARK_TEXT)
+    };
+    grad_shape(p, rect, 3.0, top, bottom, Stroke::new(1.0, rgba(110, 72, 28, 255)));
+    if enabled {
+        p.line_segment([pos2(rect.left() + 3.0, rect.top() + 1.5), pos2(rect.right() - 3.0, rect.top() + 1.5)], Stroke::new(1.0, rgba(255, 248, 220, 170)));
+    }
+    p.text(rect.center() + vec2(0.0, if down { 1.5 } else { 0.5 }), Align2::CENTER_CENTER, label, font, text);
+    resp
+}
+
+/// The game's dark button (Share, Follow): smoked glass with a faint gold edge that lights on hover. `danger` lights
+/// it red.
+pub fn ghost_button(ui: &mut egui::Ui, label: &str, width: f32, height: f32, danger: bool) -> egui::Response {
+    let font = title_font((height * 0.48).clamp(13.0, 20.0));
+    let g = ui.painter().layout_no_wrap(label.to_string(), font.clone(), INK);
+    let w = if width > 0.0 { width } else { g.size().x + height * 1.2 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    let p = ui.painter();
+    let hov = resp.hovered();
+    let lit = if danger { RED } else { GOLD };
+    p.rect_filled(rect, 3.0, if hov { rgba(lit.r(), lit.g(), lit.b(), 26) } else { rgba(0, 0, 0, 150) });
+    p.rect_stroke(rect, 3.0, Stroke::new(1.0, if hov { lit } else { gold_a(64) }), egui::StrokeKind::Inside);
+    p.text(rect.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, label, font, if hov { if danger { RED } else { GOLD_HI } } else { INK });
     resp
 }
 
@@ -84,30 +133,31 @@ pub fn gear_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
     resp
 }
 
-/// The big gold button (play / install / update).
+/// The big gold button in the bottom bar (play / install / update).
 pub fn big_button(ui: &mut egui::Ui, size: Vec2, label: &str, enabled: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     let p = ui.painter();
     let hov = enabled && resp.hovered();
     if enabled {
-        for i in 1..=6 {
-            let g = rect.expand(i as f32 * 2.5);
-            p.add(Shape::convex_polygon(chamfer(g, 10.0 + i as f32 * 2.0), gold_a(if hov { 16 } else { 9 }), Stroke::NONE));
+        // a warm glow around it
+        for i in 1..=7 {
+            let g = rect.expand(i as f32 * 2.2);
+            p.rect_filled(g, 4.0 + i as f32 * 2.0, rgba(240, 170, 70, if hov { 13 } else { 7 }));
         }
     }
     let (top, bottom, edge, text) = if !enabled {
-        (Color32::from_rgb(64, 62, 58), Color32::from_rgb(42, 41, 38), Color32::from_rgb(80, 76, 68), MUTED)
+        (Color32::from_rgb(82, 74, 62), Color32::from_rgb(54, 48, 40), Color32::from_rgb(100, 90, 74), MUTED)
     } else if hov {
-        (Color32::from_rgb(150, 246, 230), Color32::from_rgb(56, 178, 176), Color32::from_rgb(190, 255, 244), DARK_TEXT)
+        (Color32::from_rgb(255, 238, 186), Color32::from_rgb(232, 176, 92), Color32::from_rgb(255, 240, 200), DARK_TEXT)
     } else {
-        (Color32::from_rgb(118, 234, 216), Color32::from_rgb(40, 156, 160), Color32::from_rgb(160, 246, 232), DARK_TEXT)
+        (Color32::from_rgb(250, 224, 158), Color32::from_rgb(210, 150, 70), Color32::from_rgb(255, 232, 180), DARK_TEXT)
     };
     let r = if enabled && resp.is_pointer_button_down_on() { rect.shrink(1.0) } else { rect };
-    grad_shape(p, r, 10.0, top, bottom, Stroke::new(1.0, edge));
-    let inner = r.shrink(4.0);
-    p.add(Shape::closed_line(chamfer(inner, 7.0), Stroke::new(1.0, rgba(220, 255, 250, if enabled { 70 } else { 20 }))));
-    p.text(r.center(), Align2::CENTER_CENTER, label, title_font(24.0), text);
+    grad_shape(p, r, 4.0, top, bottom, Stroke::new(1.0, rgba(110, 72, 28, 255)));
+    let inner = r.shrink(3.5);
+    p.add(Shape::closed_line(chamfer(inner, 2.5), Stroke::new(1.0, rgba(edge.r(), edge.g(), edge.b(), if enabled { 120 } else { 30 }))));
+    p.text(r.center() + vec2(0.0, 1.0), Align2::CENTER_CENTER, sentence(label), title_font(28.0), text);
     resp
 }
 
@@ -127,27 +177,6 @@ pub fn field(ui: &mut egui::Ui, caption: &str, value: &mut String, password: boo
     r
 }
 
-pub fn tick_row(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
-        let p = ui.painter();
-        p.add(Shape::convex_polygon(
-            vec![rect.center_top(), rect.right_center(), rect.center_bottom(), rect.left_center()],
-            gold_a(36),
-            Stroke::new(1.0, GOLD),
-        ));
-        let c = rect.center();
-        p.line_segment([c + vec2(-4.0, 0.0), c + vec2(-1.0, 3.0)], Stroke::new(1.6, GOLD));
-        p.line_segment([c + vec2(-1.0, 3.0), c + vec2(4.5, -3.5)], Stroke::new(1.6, GOLD));
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 1.0;
-            ui.label(RichText::new(title).font(bold_font(15.0)).color(INK));
-            ui.label(RichText::new(detail).size(13.0).color(MUTED));
-        });
-    });
-    ui.add_space(6.0);
-}
-
 /// Selectable card for an install mode.
 pub fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, title: &str, size: &str, detail: &str) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 104.0), if enabled { Sense::click() } else { Sense::hover() });
@@ -158,9 +187,9 @@ pub fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, t
     } else if resp.hovered() && enabled {
         Stroke::new(1.0, gold_a(140))
     } else {
-        Stroke::new(1.0, Color32::from_rgb(52, 60, 76))
+        Stroke::new(1.0, gold_a(40))
     };
-    let (t, b) = if selected { (rgba(18, 52, 54, 230), rgba(12, 24, 28, 235)) } else { (rgba(24, 30, 40, 220), rgba(14, 18, 25, 230)) };
+    let (t, b) = if selected { (rgba(58, 42, 22, 235), rgba(28, 20, 12, 240)) } else { (rgba(24, 19, 14, 225), rgba(14, 11, 8, 232)) };
     grad_shape(p, rect, 8.0, t, b, edge);
     // radio dot
     let dot = rect.left_top() + vec2(22.0, 26.0);
@@ -168,9 +197,19 @@ pub fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, t
     if selected {
         p.circle_filled(dot, 3.5, GOLD);
     }
-    p.text(rect.left_top() + vec2(40.0, 16.0), Align2::LEFT_TOP, title, bold_font(16.0), INK);
+    p.text(rect.left_top() + vec2(40.0, 14.0), Align2::LEFT_TOP, title, title_font(16.5), if selected { GOLD_HI } else { INK });
     p.text(rect.right_top() + vec2(-16.0, 18.0), Align2::RIGHT_TOP, size, bold_font(13.0), if selected { GOLD } else { MUTED });
     let g = p.layout(detail.to_string(), FontId::proportional(13.0), MUTED, width - 56.0);
     p.galley(rect.left_top() + vec2(40.0, 44.0), g, MUTED);
     enabled && resp.clicked()
+}
+
+/// "INSTALL GAME" -> "Install game": the game's buttons speak in sentences, not capitals.
+pub fn sentence(label: &str) -> String {
+    let low = label.to_lowercase();
+    let mut c = low.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }

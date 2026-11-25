@@ -51,8 +51,8 @@ impl Xfer {
 
 /// A square check box drawn in the launcher's gold.
 fn check_box(p: &Painter, r: Rect, on: bool, enabled: bool, hover: bool) {
-    let edge = if !enabled { rgba(90, 96, 108, 160) } else if on || hover { GOLD } else { rgba(110, 150, 150, 200) };
-    let fill = if on && enabled { GOLD } else { rgba(10, 13, 19, 220) };
+    let edge = if !enabled { rgba(96, 88, 76, 160) } else if on || hover { GOLD } else { gold_a(110) };
+    let fill = if on && enabled { GOLD } else { rgba(12, 9, 7, 220) };
     p.rect(r, 3.0, fill, Stroke::new(1.3, edge), egui::StrokeKind::Inside);
     if on && enabled {
         let c = r.center();
@@ -100,9 +100,9 @@ fn line(ui: &mut egui::Ui, width: f32, item: &transfer::Item, on: bool, enabled:
     let tag_r = chip(p, pos2(rect.right() - 12.0, rect.center().y), tag.0, tag.1);
     let text_w = tag_r.left() - rect.left() - 60.0;
     let title_c = if enabled { INK } else { MUTED };
-    p.text(pos2(rect.left() + 48.0, rect.top() + 9.0), Align2::LEFT_TOP, item.title, bold_font(15.0), title_c);
+    p.text(pos2(rect.left() + 48.0, rect.top() + 9.0), Align2::LEFT_TOP, item.title, title_font(16.5), title_c);
     let sum = elide(p, &item.summary, FontId::proportional(12.5), text_w);
-    p.text(pos2(rect.left() + 48.0, rect.top() + 28.0), Align2::LEFT_TOP, sum, FontId::proportional(12.5), if enabled { MUTED } else { rgba(120, 128, 140, 200) });
+    p.text(pos2(rect.left() + 48.0, rect.top() + 28.0), Align2::LEFT_TOP, sum, FontId::proportional(12.5), if enabled { MUTED } else { rgba(140, 128, 112, 200) });
     (box_hit.clicked(), resp.clicked() && !box_hit.clicked())
 }
 
@@ -341,7 +341,7 @@ impl App {
         let p = ui.painter().clone();
 
         // header
-        p.text(inner.left_top(), Align2::LEFT_TOP, "Bring your setup from AA Classic", title_font(26.0), INK);
+        p.text(inner.left_top(), Align2::LEFT_TOP, "Bring your setup from AA Classic", title_font(28.0), GOLD_HI);
         p.text(inner.left_top() + vec2(0.0, 34.0), Align2::LEFT_TOP, "Tick what should come over and press Transfer. AA Classic's own files are only read, and Undo puts everything back.", FontId::proportional(13.0), MUTED);
 
         let top = inner.top() + 62.0;
@@ -392,7 +392,7 @@ impl App {
                 }
                 let enabled = it.ready && (!it.server || server.is_ok()) && !locked;
                 let on = self.xfer.ticks.contains(&it.id) && it.ready && (!it.server || server.is_ok());
-                let grey = rgba(150, 156, 168, 255);
+                let grey = rgba(164, 154, 138, 255);
                 let tag = if !it.ready {
                     match it.id {
                         "keybinds" | "options" | "bars" if self.xfer.scan.as_ref().is_some_and(|s| s.recording.is_none()) => ("NEEDS RECORDING", grey),
@@ -428,12 +428,12 @@ impl App {
         // the preview, then the sources
         ui.scope_builder(UiBuilder::new().max_rect(right).layout(Layout::top_down(Align::Min)), |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
-            let frame = egui::Frame::new().fill(rgba(6, 9, 14, 200)).stroke(Stroke::new(1.0, rgba(255, 255, 255, 20))).corner_radius(4).inner_margin(Margin::symmetric(14, 12));
+            let frame = egui::Frame::new().fill(rgba(10, 8, 6, 210)).stroke(Stroke::new(1.0, gold_a(40))).corner_radius(4).inner_margin(Margin::symmetric(14, 12));
             frame.show(ui, |ui| {
                 ui.set_width(right.width() - 28.0);
                 ui.set_min_height(150.0);
                 if let Some((ok, head, lines)) = &self.xfer.result {
-                    ui.label(RichText::new(head).font(bold_font(16.0)).color(if *ok { GREEN } else { RED }));
+                    ui.label(RichText::new(head).font(title_font(18.0)).color(if *ok { GREEN } else { RED }));
                     for l in lines {
                         ui.label(RichText::new(format!("•  {l}")).size(13.0).color(INK));
                     }
@@ -446,7 +446,7 @@ impl App {
                         ui.label(RichText::new("Moving…").color(MUTED));
                     });
                 } else if let Some(it) = items.get(self.xfer.selected) {
-                    ui.label(RichText::new(it.title).font(bold_font(16.0)).color(GOLD));
+                    ui.label(RichText::new(it.title).font(title_font(17.0)).color(GOLD));
                     ui.label(RichText::new(&it.summary).size(13.5).color(INK));
                     for l in &it.lines {
                         ui.label(RichText::new(l).size(12.5).color(MUTED));

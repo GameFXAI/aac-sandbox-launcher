@@ -2,31 +2,35 @@
 //! recording card under the pitch.
 
 use crate::gui::theme::*;
-use crate::gui::widgets::{field, tick_row};
+use crate::gui::widgets::{field, gold_button};
 use crate::gui::{Action, App};
 use crate::net::Server;
 use crate::{recorder, transfer};
-use eframe::egui::{self, Align, Align2, Color32, Layout, Rect, RichText, Sense, Stroke, UiBuilder, pos2, vec2};
+use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Rect, RichText, Sense, Stroke, UiBuilder, pos2, vec2};
 
 impl App {
     pub(in crate::gui) fn play_tab(&mut self, ui: &mut egui::Ui, body: Rect, act: &mut Option<Action>) {
-        // left: the pitch
-        let hero = Rect::from_min_size(body.min + vec2(56.0, 64.0), vec2(610.0, body.height() - 80.0));
-        ui.scope_builder(UiBuilder::new().max_rect(hero).layout(Layout::top_down(Align::Min)), |ui| {
-            ui.label(RichText::new("ARENA  ·  REPLAYS  ·  PRACTICE").font(bold_font(12.5)).color(GOLD).extra_letter_spacing(3.0));
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 14.0;
-                ui.label(RichText::new("AA").font(title_font(56.0)).color(INK));
-                ui.label(RichText::new("Replay").font(title_font(56.0)).color(GOLD));
-            });
-            ui.add_space(2.0);
-            ui.label(RichText::new("Fight in the arena with your friends, then watch every fight back and get better.").size(16.0).color(MUTED));
-            ui.add_space(14.0);
-            tick_row(ui, "Any build, in seconds", "Wear a DaruGear build or a class setup. Dying costs nothing.");
-            tick_row(ui, "Every fight recorded", "Watch it back in the game: pause, slow it down, see every hit.");
-            tick_row(ui, "Kept apart from AA Classic", "Own copy, own folder, own account. AA Classic is never changed.");
-        });
+        // left: the pitch, as the Arena window's front: a small line, the name in gold, what is on, what it is
+        let p = ui.painter().clone();
+        let at = body.min + vec2(56.0, 38.0);
+        shadow_text(&p, at, Align2::LEFT_TOP, "ARENA  ·  REPLAYS  ·  PRACTICE", title_font(13.0), INK);
+        gold_title(&p, at + vec2(-3.0, 16.0), Align2::LEFT_TOP, "AA Replay", title_font(74.0));
+        let (dot, text) = match &self.server_up {
+            None => (MUTED, "Checking the arena server…".to_string()),
+            Some(Ok(name)) => (GREEN, format!("{name} is online")),
+            Some(Err(_)) => (RED, "The arena server does not answer".to_string()),
+        };
+        let line = at + vec2(0.0, 112.0);
+        p.circle_filled(line + vec2(5.0, 9.0), 3.5, dot);
+        let sr = shadow_text(&p, line + vec2(18.0, 0.0), Align2::LEFT_TOP, text, FontId::proportional(15.5), INK);
+        if let Some(Err(e)) = &self.server_up {
+            ui.interact(sr, ui.scope_id().with("server-why"), Sense::hover()).on_hover_text(e.as_str());
+        }
+        shadow_text(&p, at + vec2(0.0, 140.0), Align2::LEFT_TOP, "Any build in seconds   ·   Every fight recorded   ·   Nothing to lose", FontId::proportional(13.5), INK);
+        let blurb = "Fight in the arena with your friends, then watch every fight back in the game: pause it, slow it down, see every hit. Your own copy and your own account: AA Classic is never changed.";
+        let g = p.layout(blurb.to_string(), FontId::proportional(14.0), rgba(222, 208, 182, 255), 560.0);
+        p.galley(at + vec2(0.0, 166.0) + vec2(0.0, 1.5), p.layout(blurb.to_string(), FontId::proportional(14.0), rgba(0, 0, 0, 170), 560.0), Color32::BLACK);
+        p.galley(at + vec2(0.0, 166.0), g, INK);
         self.recording_card(ui, body, act);
         if self.offer {
             return self.offer_card(ui, body, act);
@@ -35,9 +39,9 @@ impl App {
         // right: sign in
         let w = 360.0;
         let tall = if self.saved.is_some() {
-            250.0
+            214.0
         } else {
-            if self.signup && self.baked_invite.is_none() { 482.0 } else { 416.0 }
+            if self.signup && self.baked_invite.is_none() { 454.0 } else { 388.0 }
         };
         let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 36.0), vec2(w, tall));
         card(ui.painter(), cardr);
@@ -52,28 +56,13 @@ impl App {
             } else {
                 ("Sign in", "Your AA Replay account, not your AA Classic one.")
             };
-            ui.label(RichText::new(title).font(title_font(26.0)).color(INK));
+            ui.label(RichText::new(title).font(title_font(27.0)).color(GOLD_HI));
             ui.label(RichText::new(sub).size(13.0).color(MUTED));
-            ui.add_space(8.0);
-            // the server: a status line only (always the arena box; core::server_address)
-            ui.horizontal(|ui| {
-                let (dot, text) = match &self.server_up {
-                    None => (MUTED, "Checking the arena server…".to_string()),
-                    Some(Ok(name)) => (GREEN, format!("{name} is online")),
-                    Some(Err(_)) => (RED, "The arena server does not answer".to_string()),
-                };
-                let (r, _) = ui.allocate_exact_size(vec2(10.0, 18.0), Sense::hover());
-                ui.painter().circle_filled(r.center(), 4.0, dot);
-                let l = ui.label(RichText::new(text).size(13.0).color(INK));
-                if let Some(Err(e)) = &self.server_up {
-                    l.on_hover_text(e.as_str());
-                }
-            });
-            ui.add_space(6.0);
+            ui.add_space(10.0);
             if let Some(s) = &self.saved {
                 ui.add_space(6.0);
                 ui.label(RichText::new("SIGNED IN AS").size(11.5).color(MUTED).extra_letter_spacing(1.2));
-                ui.label(RichText::new(s.username.as_str()).font(bold_font(20.0)).color(INK));
+                ui.label(RichText::new(s.username.as_str()).font(title_font(24.0)).color(INK));
                 ui.add_space(8.0);
                 if ui.add(egui::Label::new(RichText::new("Not you? Sign out").size(13.0).color(BLUE).underline()).sense(Sense::click())).clicked() {
                     *act = Some(Action::SignOut);
@@ -166,12 +155,12 @@ impl App {
             ui.horizontal(|ui| {
                 let (d, _) = ui.allocate_exact_size(vec2(12.0, 22.0), Sense::hover());
                 ui.painter().circle_filled(d.center(), 5.0, dot);
-                ui.label(RichText::new(head).font(bold_font(16.0)).color(INK));
+                ui.label(RichText::new(head).font(title_font(19.0)).color(INK));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if self.rec_busy.is_some() {
                         ui.add(egui::Spinner::new());
                     } else if !rec.set_up {
-                        if ui.add(egui::Button::new(RichText::new("Set up recording").font(bold_font(14.0)).color(DARK_TEXT)).fill(GOLD))
+                        if gold_button(ui, "Set up recording", 0.0, 30.0, true)
                             .on_hover_text("Downloads the recorder, starts it, and starts it with Windows. Windows then asks once for admin rights, because AA Classic runs as admin: answer Yes, and it never asks again.")
                             .clicked()
                         {
@@ -186,7 +175,7 @@ impl App {
                         if ui.button("Turn off").on_hover_text("Stops recording and no longer starts it with Windows. What was recorded is kept.").clicked() {
                             *act = Some(Action::RecOff);
                         }
-                    } else if ui.add(egui::Button::new(RichText::new("Turn on").font(bold_font(14.0)).color(DARK_TEXT)).fill(GOLD)).clicked() {
+                    } else if gold_button(ui, "Turn on", 0.0, 30.0, true).clicked() {
                         *act = Some(Action::RecOn);
                     }
                     if rec.set_up && ui.add(egui::Label::new(RichText::new("Recordings folder").size(12.5).color(BLUE).underline()).sense(Sense::click())).clicked() {
@@ -208,7 +197,7 @@ impl App {
         let cardr = Rect::from_min_size(pos2(body.right() - w - 48.0, body.top() + 36.0), vec2(w, 200.0 + ready.len() as f32 * 48.0));
         card(ui.painter(), cardr);
         ui.scope_builder(UiBuilder::new().max_rect(cardr.shrink2(vec2(28.0, 24.0))).layout(Layout::top_down(Align::Min)), |ui| {
-            ui.label(RichText::new("Bring your AA Classic settings?").font(title_font(24.0)).color(INK));
+            ui.label(RichText::new("Bring your AA Classic settings?").font(title_font(25.0)).color(GOLD_HI));
             ui.label(RichText::new("Once, before your first game. AA Classic's files are only read, and Settings can undo it.").size(13.0).color(MUTED));
             ui.add_space(8.0);
             for it in &ready {
@@ -228,7 +217,7 @@ impl App {
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new("Bring them and play").font(bold_font(15.0)).color(DARK_TEXT)).fill(GOLD)).clicked() {
+                if gold_button(ui, "Bring them and play", 0.0, 32.0, true).clicked() {
                     *act = Some(Action::BringSettings);
                 }
                 if ui.button("Not now, just play").clicked() {
