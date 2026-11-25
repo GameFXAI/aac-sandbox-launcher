@@ -114,8 +114,8 @@ fn go(args: &[String]) -> Result<(), String> {
             let user = opt(args, "--user").ok_or("--user is required")?;
             let server = server()?;
             let address = server.client_address()?;
-            // the AA REPLAY loading screens, splash and icon (never stops a play)
-            if let Some(line) = crate::art::ensure(&paths) {
+            // Verify hosted branding before obtaining a launch ticket.
+            if let Some(line) = crate::art::before_play(&paths, &server)? {
                 println!("{line}");
             }
             let (user, token) = match (opt(args, "--token"), opt(args, "--password"), &server) {

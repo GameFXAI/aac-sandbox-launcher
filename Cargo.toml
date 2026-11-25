@@ -1,6 +1,6 @@
 [package]
 name = "aac-sandbox-launcher"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "AA Replay launcher: a separate, sandboxed copy of the AA Classic client that plays on AA Replay servers"
 license = "GPL-3.0-only"

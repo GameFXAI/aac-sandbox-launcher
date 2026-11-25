@@ -23,7 +23,7 @@
 //!   `aa-replay-art\originals` so a newer pack can be put on it again.
 //! An AA Classic update makes the launcher copy `binNext` again (core::setup), which drops the loader and the
 //! resources; a changed `game_pak` turns the overlay off. Both are found and redone at the next play
-//! (`aa-replay-art\launcher.json` says what is in place). Art never stops a play: errors are reported and the game
+//! (`aa-replay-art\launcher.json` says what is in place). Optional art errors are reported and the game
 //! starts with its own pictures.
 
 use crate::core::Paths;
@@ -272,6 +272,8 @@ struct Marker {
     #[serde(default)]
     pak_modified: u64,
     overlay_length: u64,
+    #[serde(default)]
+    overlay_sha256: String,
     loader_sha256: String,
     /// binNext file -> its SHA-256 after our change
     res: BTreeMap<String, String>,
@@ -330,6 +332,10 @@ fn replace_file(dst: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Puts the pack's art in our client, or makes sure it is still there. Returns what was done, in words (`None`:
 /// everything was in place already).
 pub fn apply(paths: &Paths, pack: &Pack) -> Result<Option<String>, String> {
+    apply_art(paths, pack, false)
+}
+
+fn apply_art(paths: &Paths, pack: &Pack, required: bool) -> Result<Option<String>, String> {
     let (bin, pak_path) = (paths.bin(), paths.pak());
     if !paths.exe().is_file() || !pak_path.is_file() {
         return Err("the game copy is not set up yet".into());
@@ -345,11 +351,20 @@ pub fn apply(paths: &Paths, pack: &Pack) -> Result<Option<String>, String> {
     let pak_len = meta.len();
     let pak_modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0);
     let ov = dir.join("overlay.bin");
-    let ov_ok = m.pack == pack.id && m.pak_length == pak_len && m.pak_modified == pak_modified && fs::metadata(&ov).map(|x| x.len()).ok() == Some(m.overlay_length) && dir.join("overlay.json").is_file();
+    let ov_ok = m.pack == pack.id && m.pak_length == pak_len && m.pak_modified == pak_modified && fs::metadata(&ov).map(|x| x.len()).ok() == Some(m.overlay_length)
+        && (!required || sha_file(&ov).is_some_and(|hash| hash == m.overlay_sha256)) && {
+        let metadata = fs::read(dir.join("overlay.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+        metadata.is_some_and(|v| v["pack"] == pack.id && v["pak_length"] == pak_len && v["total_length"] == pak_len + m.overlay_length
+            && (!required || v["files"].as_array().is_some_and(|files| files.len() == pack.pak.len()
+                && pack.pak.iter().all(|(name, _)| files.iter().any(|value| value == name)))))
+    };
     if !ov_ok {
         let pak = Pak::open(&pak_path, false)?;
         let files: Vec<(&str, &[u8])> = pack.pak.iter().filter(|(n, _)| pak.get(n).is_some()).map(|(n, b)| (n.as_str(), pack.blob(*b))).collect();
         if files.len() < pack.pak.len() {
+            if required {
+                return Err("this game archive is missing required art entries".into());
+            }
             notes.push(format!("{} files of the art are not in this game's data and were left out", pack.pak.len() - files.len()));
         }
         let tmp = dir.join("overlay.bin.new");
@@ -373,6 +388,7 @@ pub fn apply(paths: &Paths, pack: &Pack) -> Result<Option<String>, String> {
         m.pak_length = pak_len;
         m.pak_modified = pak_modified;
         m.overlay_length = n;
+        m.overlay_sha256 = sha_file(&ov).ok_or("cannot verify the written art overlay")?;
         did.push(format!("{} game pictures", files.len()));
     }
     m.pack = pack.id.clone();
@@ -383,19 +399,30 @@ pub fn apply(paths: &Paths, pack: &Pack) -> Result<Option<String>, String> {
     let dll = bin.join(LOADER);
     match sha_file(&dll) {
         Some(s) if s == want => {}
-        Some(s) if s != m.loader_sha256 => notes.push(format!("{} is not ours and was left alone: the art stays off", dll.display())),
+        Some(s) if s != m.loader_sha256 => {
+            let error = format!("{} is not ours and was left alone: the art stays off", dll.display());
+            if required { return Err(error); }
+            notes.push(error);
+        }
         _ => {
             replace_file(&dll, loader)?;
             did.push("the art loader".into());
         }
     }
-    m.loader_sha256 = want;
+    if sha_file(&dll).as_deref() == Some(&want) {
+        m.loader_sha256 = want;
+    }
 
     // 3. the splash and the window icon
     let keep = dir.join("originals");
     for r in &pack.res {
         let path = bin.join(&r.file);
-        let Some(now) = sha_file(&path) else { continue };
+        let Some(now) = sha_file(&path) else {
+            if required {
+                notes.push(format!("binNext/{} is missing or unreadable", r.file));
+            }
+            continue;
+        };
         let ours = m.res.get(&r.file).is_some_and(|s| *s == now);
         let base = if now == r.original_sha256.to_lowercase() {
             let b = fs::read(&path).map_err(|e| e.to_string())?;
@@ -407,7 +434,7 @@ pub fn apply(paths: &Paths, pack: &Pack) -> Result<Option<String>, String> {
         } else if ours && sha_file(&keep.join(&r.file)).as_deref() == Some(&r.original_sha256.to_lowercase()) {
             fs::read(keep.join(&r.file)).map_err(|e| e.to_string())? // an older pack's change: redone from the original
         } else {
-            if m.skipped.get(&r.file) != Some(&now) {
+            if required || m.skipped.get(&r.file) != Some(&now) {
                 notes.push(format!("binNext\\{} is another build than the art was made for: left as it is", r.file));
                 m.skipped.insert(r.file.clone(), now);
             }
@@ -429,11 +456,33 @@ pub fn apply(paths: &Paths, pack: &Pack) -> Result<Option<String>, String> {
 
     fs::write(dir.join(MARKER), serde_json::to_vec_pretty(&m).unwrap()).map_err(|e| e.to_string())?;
     let mut line = if did.is_empty() { String::new() } else { format!("AA REPLAY art put in place: {}", did.join(", ")) };
+    if required && !notes.is_empty() {
+        return Err(notes.join("; "));
+    }
     for n in notes {
         line.push_str(if line.is_empty() { "AA REPLAY art: " } else { "; " });
         line.push_str(&n);
     }
     Ok((!line.is_empty()).then_some(line))
+}
+
+/// Hosted Replay requires a fully applied, signed art pack before requesting a ticket.
+pub fn before_play(paths: &Paths, server: &crate::net::Server) -> Result<Option<String>, String> {
+    if !matches!(server, crate::net::Server::Api { url, .. } if url.eq_ignore_ascii_case(crate::core::DEFAULT_SERVER)) {
+        return Ok(ensure(paths));
+    }
+    let result = (|| {
+        let (release, bytes) = fetch(paths)?.ok_or("no signed art pack available")?;
+        apply_art(paths, &parse(&release, &bytes)?, true)
+    })();
+    if let Ok(Some(line)) = &result {
+        crate::core::log_line(paths, line);
+    }
+    result.map_err(|e| {
+        let message = format!("AA REPLAY art is required to play: {e}");
+        crate::core::log_line(paths, &message);
+        message
+    })
 }
 
 /// Before a play: the newest art, put in place. Never stops a play; the caller shows the line it returns.
@@ -558,6 +607,7 @@ mod tests {
         assert_eq!(ov["pak_length"], fs::metadata(paths.pak()).unwrap().len());
         // a second play: nothing to do
         assert_eq!(apply(&paths, &p).unwrap(), None);
+        assert!(apply_art(&paths, &p, true).unwrap_err().contains("missing required art"));
         // an AA Classic update: binNext copied again (no loader), game_pak changed
         fs::remove_file(paths.bin().join(LOADER)).unwrap();
         let mut pk = Pak::open(&paths.pak(), true).unwrap();
@@ -583,6 +633,8 @@ mod tests {
         let line = apply(&paths, &parse(&r, &packed).unwrap()).unwrap().unwrap();
         assert!(line.contains("not ours"), "{line}");
         assert_eq!(fs::read(paths.bin().join(LOADER)).unwrap(), b"someone else's");
+        let strict = apply_art(&paths, &parse(&r, &packed).unwrap(), true).unwrap_err();
+        assert!(strict.contains("not ours"), "{strict}");
     }
 
     #[test]

@@ -879,9 +879,13 @@ impl App {
                         return;
                     }
                 }
-                // the AA REPLAY loading screens, splash and icon (never stops a play)
-                if let Some(line) = crate::art::ensure(&paths) {
-                    let _ = tx.send(Msg::Line(line));
+                match crate::art::before_play(&paths, &server) {
+                    Ok(Some(line)) => { let _ = tx.send(Msg::Line(line)); }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = tx.send(Msg::Ticket(Err(e)));
+                        return;
+                    }
                 }
                 let _ = tx.send(Msg::Ticket(net::login(&server, &username, secret.cred(), remember).map(|t| (t.username, t.ticket, t.session))));
             });

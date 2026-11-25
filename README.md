@@ -113,8 +113,8 @@ window icon (art.rs). AA Classic's folder is never touched.
 - **After an AA Classic update.** A new `binNext` is copied as before, which drops the loader and the resources; a
   changed `game_pak` turns the loader off by itself (the length no longer matches `overlay.json`). The next PLAY sees
   this (`aa-replay-art\launcher.json`) and builds it again.
-- **Never in the way.** If anything fails, the game starts with its own pictures and the log says why.
-  `AAREPLAY_ART=off` skips it; `AAREPLAY_ART_MANIFEST` points at another (still signed) manifest, for tests.
+- **Required on the hosted Replay server.** Play checks the signed art and stops before sign-in if the full pack cannot be applied.
+  On other servers art is optional; `AAREPLAY_ART=off` skips it there. `AAREPLAY_ART_MANIFEST` can point at a different signed manifest for testing.
 - **Publishing new art.** On the server repo: `python Tools/branding/aa_replay_art.py launcher-pack` (it needs
   `zstandard`), then `aac-sandbox-launcher manifest sign art.json <key>`, then upload the pack, `art.json` and
   `art.json.sig` to `/srv/aareplay/www/launcher/art/`. `art` on the command line does the install by hand.
