@@ -188,6 +188,9 @@ impl App {
         }
         signin::forget(&self.paths);
         self.password.clear();
+        // the next account must not see this one's replays
+        crate::library::forget_cached(&self.paths);
+        self.lib = Default::default();
         self.say("Signed out on this PC");
     }
 
@@ -217,6 +220,18 @@ impl App {
             Err(e) => return self.say(e),
         };
         let l = Launch { username, token, login_ip: address.clone(), game_ip: address, lang: self.cfg.lang.clone(), login_port: self.cfg.login_port };
+        // a Watch from the Library: the recording for the game's replay player, written after the server's addons
+        // went in (they replace its folder); a plain Play leaves none from before
+        let watch = self.lib.take_pending();
+        match crate::library::set_pending_watch(&self.paths, watch) {
+            Ok(()) if watch.is_some() => self.say(format!("the game opens replay {} once it is in the world", watch.unwrap())),
+            Ok(()) => {}
+            Err(e) if watch.is_some() => {
+                self.lib.note = Some(Err(format!("The game starts, but the replay cannot be opened by itself: {e}. Open Replays in the game.")));
+                self.say(format!("replay: {e}"));
+            }
+            Err(e) => self.say(format!("replay: an old request could not be removed: {e}")),
+        }
         match play(&self.paths, aac.as_ref(), self.cfg.mode, &l) {
             Ok(c) => {
                 self.say(format!("client started (pid {})", c.id()));

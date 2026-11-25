@@ -38,6 +38,20 @@ impl App {
                     }
                 }
             });
+            // the plan as the server last said it; the button is the one a real checkout will point elsewhere
+            if let Some(l) = self.lib.data.clone() {
+                let (name, line) = crate::gui::screens::library::plan_words(&l);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Plan: {name}")).font(bold_font(14.5)).color(if l.is_sub() { GOLD } else { INK }));
+                    ui.label(RichText::new(line).size(12.5).color(MUTED));
+                    if !l.upgrade_url.is_empty() {
+                        let label = if l.is_sub() { "About your plan" } else { "Contact to upgrade" };
+                        if ui.button(label).on_hover_text(l.upgrade_url.as_str()).clicked() {
+                            *act = Some(Action::Upgrade);
+                        }
+                    }
+                });
+            }
             ui.add_space(6.0);
 
             ui.label(RichText::new("FROM AA CLASSIC").size(11.5).color(MUTED).extra_letter_spacing(1.2));

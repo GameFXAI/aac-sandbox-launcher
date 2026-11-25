@@ -10,6 +10,7 @@ mod find;
 mod gui;
 mod install;
 mod ldb;
+mod library;
 mod net;
 mod pak;
 mod recorder;

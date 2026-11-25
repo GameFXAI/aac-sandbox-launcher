@@ -232,3 +232,95 @@ pub fn ridge(p: &Painter, r: Rect, base: f32, amp: f32, freq: f32, seed: f32, to
     }
     p.add(Shape::mesh(m));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Icons: small vector shapes painted in code (no picture files, nothing of AA Classic's art)
+// ---------------------------------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Icon {
+    Play,
+    Trash,
+    Lock,
+    Star,
+    Clock,
+    Refresh,
+    /// a film frame: the empty Library
+    Film,
+}
+
+/// Paints `kind` centred on `c`, `s` pixels across.
+pub fn icon(p: &Painter, c: Pos2, s: f32, kind: Icon, color: Color32) {
+    let k = s / 20.0;
+    let w = (1.6 * k).max(1.2);
+    let line = Stroke::new(w, color);
+    let at = |x: f32, y: f32| c + vec2(x * k, y * k);
+    match kind {
+        Icon::Play => {
+            p.add(Shape::convex_polygon(vec![at(-5.0, -8.0), at(8.5, 0.0), at(-5.0, 8.0)], color, Stroke::NONE));
+        }
+        Icon::Trash => {
+            p.line_segment([at(-8.0, -6.0), at(8.0, -6.0)], line);
+            p.add(Shape::line(vec![at(-3.0, -6.0), at(-3.0, -9.0), at(3.0, -9.0), at(3.0, -6.0)], line));
+            p.add(Shape::closed_line(vec![at(-6.0, -6.0), at(6.0, -6.0), at(5.0, 9.0), at(-5.0, 9.0)], line));
+            for x in [-2.2, 2.2] {
+                p.line_segment([at(x, -2.5), at(x, 5.5)], line);
+            }
+        }
+        Icon::Lock => {
+            p.add(Shape::rect_filled(Rect::from_min_max(at(-7.0, -1.0), at(7.0, 9.0)), 1.5 * k, color));
+            let arc: Vec<Pos2> = (0..=12).map(|i| {
+                let a = std::f32::consts::PI * (1.0 + i as f32 / 12.0);
+                at(4.5 * a.cos(), -1.0 + 6.0 * a.sin())
+            }).collect();
+            p.add(Shape::line(arc, line));
+        }
+        Icon::Star => {
+            let pts: Vec<Pos2> = (0..10).map(|i| {
+                let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                let r = if i % 2 == 0 { 9.0 } else { 3.8 };
+                at(r * a.cos(), r * a.sin())
+            }).collect();
+            // a star is not convex: a fan of triangles from the centre
+            for i in 0..10 {
+                p.add(Shape::convex_polygon(vec![c, pts[i], pts[(i + 1) % 10]], color, Stroke::NONE));
+            }
+        }
+        Icon::Clock => {
+            p.circle_stroke(c, 8.0 * k, line);
+            p.line_segment([c, at(0.0, -5.0)], line);
+            p.line_segment([c, at(3.5, 2.0)], line);
+        }
+        Icon::Refresh => {
+            let arc: Vec<Pos2> = (0..=20).map(|i| {
+                let a = 0.35 + i as f32 / 20.0 * 5.2;
+                at(7.0 * a.cos(), 7.0 * a.sin())
+            }).collect();
+            let end = *arc.last().unwrap();
+            p.add(Shape::line(arc, line));
+            p.add(Shape::convex_polygon(vec![end + vec2(-4.0 * k, -3.0 * k), end + vec2(3.5 * k, -3.5 * k), end + vec2(0.5 * k, 3.5 * k)], color, Stroke::NONE));
+        }
+        Icon::Film => {
+            p.add(Shape::rect_stroke(Rect::from_center_size(c, vec2(18.0 * k, 14.0 * k)), 1.5 * k, line, egui::StrokeKind::Middle));
+            for x in [-6.5, -2.2, 2.2, 6.5] {
+                for y in [-5.0, 5.0] {
+                    p.add(Shape::rect_filled(Rect::from_center_size(at(x, y), vec2(2.0 * k, 1.6 * k)), 0.0, color));
+                }
+            }
+            p.add(Shape::convex_polygon(vec![at(-2.0, -2.5), at(3.0, 0.0), at(-2.0, 2.5)], color, Stroke::NONE));
+        }
+    }
+}
+
+/// A round icon button: the icon in a ring that lights on hover. `danger` turns it red on hover.
+pub fn icon_button(ui: &mut egui::Ui, kind: Icon, size: f32, tip: &str, danger: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
+    let hov = resp.hovered();
+    let col = if hov { if danger { RED } else { GOLD } } else { MUTED };
+    let p = ui.painter();
+    p.circle_filled(rect.center(), size / 2.0, if hov { rgba(255, 255, 255, 16) } else { rgba(255, 255, 255, 6) });
+    p.circle_stroke(rect.center(), size / 2.0 - 0.5, Stroke::new(1.0, if hov { col } else { rgba(255, 255, 255, 30) }));
+    icon(p, rect.center(), size * 0.5, kind, col);
+    resp.on_hover_text(tip)
+}

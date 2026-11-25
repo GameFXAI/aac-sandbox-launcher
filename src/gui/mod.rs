@@ -11,7 +11,7 @@
 
 use crate::core::*;
 use crate::net;
-use crate::{find, recorder, settings, signin, transfer, update};
+use crate::{find, library, recorder, settings, signin, transfer, update};
 
 mod bottom_bar;
 mod events;
@@ -24,6 +24,7 @@ mod widgets;
 use eframe::egui::{self, Align, Align2, Layout, Rect, RichText, Sense, Shape, Stroke, UiBuilder, ViewportCommand, pos2, vec2};
 use events::Event;
 use report::ReportForm;
+use screens::library::Lib;
 use screens::transfer::Xfer;
 use std::process::Child;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -36,10 +37,12 @@ fn transfer_docs_present() -> bool {
     transfer::real_docs().is_some()
 }
 
-/// The screen in the body. Play is home; the others are behind the gear (Back returns to Play).
+/// The screen in the body. Play and Replays are in the top bar; the others are behind the gear (Play returns home).
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
     Play,
+    /// the account's recordings (screens/library.rs)
+    Library,
     Transfer,
     Settings,
     Log,
@@ -78,6 +81,14 @@ enum Action {
     RecOff,
     /// the one admin prompt, again after a No (admin.rs)
     RecAdmin,
+    /// the Library: the list again from the server
+    RefreshLibrary,
+    /// the Library: delete this recording (its stable number), after the card's "Delete this replay?"
+    DeleteReplay(i32),
+    /// the Library: start the game and open this recording in its replay player
+    WatchReplay(i32),
+    /// the server's upgrade page (the only thing a real checkout will change is where it points)
+    Upgrade,
 }
 
 /// What a sign-in proves the account with, kept only in memory (the password) or sealed on disk (the token).
@@ -148,6 +159,8 @@ struct App {
     rec_note: Option<Result<String, String>>,
     rec_sending: bool,
     rec_sent_at: Option<std::time::Instant>,
+    /// the replay Library (screens/library.rs)
+    lib: Lib,
 }
 
 impl App {
@@ -190,6 +203,7 @@ impl App {
             tab: match std::env::var("AAEMU_SANDBOX_TAB").as_deref() {
                 Ok("settings") => Tab::Settings,
                 Ok("log") => Tab::Log,
+                Ok("library") => Tab::Library,
                 _ => Tab::Play,
             },
             confirm: None,
@@ -209,9 +223,13 @@ impl App {
             rec_note: None,
             rec_sending: false,
             rec_sent_at: None,
+            lib: Lib::default(),
         };
         if let Some(s) = &a.saved {
             a.cfg.username = s.username.clone();
+            // the last list at once (the plan badge too), and a fresh one off the window's thread
+            a.lib.data = library::load_cached(&a.paths, &a.cfg.login_ip, &s.username);
+            a.fetch_library();
         }
         a.check_server();
         a.refresh();
@@ -395,6 +413,18 @@ impl App {
                 self.rec_note = Some(recorder::turn_off(&self.paths).map(|()| "Recording is off. What it recorded is kept.".to_string()));
                 self.rec_read = None;
             }
+            Action::RefreshLibrary => {
+                self.lib.note = None;
+                self.fetch_library();
+            }
+            Action::DeleteReplay(n) => self.delete_replay(n),
+            Action::WatchReplay(n) => self.watch_replay(n),
+            Action::Upgrade => {
+                let url = self.lib.data.as_ref().map(|l| l.upgrade_url.clone()).unwrap_or_default();
+                if let Err(e) = screens::library::open_upgrade(&url) {
+                    self.warn(e);
+                }
+            }
         }
     }
 
@@ -420,9 +450,12 @@ impl App {
         let tabs = Rect::from_min_max(pos2(sb.right() + 40.0, rect.top()), rect.max);
         ui.scope_builder(UiBuilder::new().max_rect(tabs).layout(Layout::left_to_right(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            // one screen: everything else is behind the gear, and the gear (or Back) brings you back
-            if self.tab != Tab::Play && nav_tab(ui, "‹  Back", false).clicked() {
+            // Play and Replays; everything else is behind the gear, and Play brings you back
+            if nav_tab(ui, "Play", self.tab == Tab::Play).clicked() {
                 self.tab = Tab::Play;
+            }
+            if nav_tab(ui, "Replays", self.tab == Tab::Library).clicked() {
+                self.tab = Tab::Library;
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if win_button(ui, WinBtn::Close).clicked() {
@@ -431,11 +464,17 @@ impl App {
                 if win_button(ui, WinBtn::Minimize).clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
                 }
-                let open = self.tab != Tab::Play;
+                let open = !matches!(self.tab, Tab::Play | Tab::Library);
                 if gear_button(ui, open).on_hover_text(if open { "Back to Play" } else { "Settings" }).clicked() {
                     self.tab = if open { Tab::Play } else { Tab::Settings };
                 }
                 ui.add_space(8.0);
+                if let Some(l) = &self.lib.data {
+                    if plan_badge(ui, l).clicked() {
+                        self.tab = Tab::Library;
+                    }
+                    ui.add_space(8.0);
+                }
                 if ui.add(egui::Button::new(RichText::new("Report a problem").size(13.0).color(INK))).on_hover_text("Tell us what went wrong. The launcher's and the game's logs go with it (no password is in them).").clicked() {
                     *act = Some(Action::Report);
                 }
@@ -469,6 +508,7 @@ impl eframe::App for App {
         self.top_bar(root, top, &mut act);
         match self.tab {
             Tab::Play => self.play_tab(root, body, &mut act),
+            Tab::Library => self.library_tab(root, body, &mut act),
             Tab::Transfer => self.transfer_tab(root, body, &mut act),
             Tab::Settings => self.settings_tab(root, body, &mut act),
             Tab::Log => self.log_tab(root, body),
@@ -482,6 +522,30 @@ impl eframe::App for App {
             self.run(a);
         }
     }
+}
+
+/// The plan in the top bar, as the server last said it: "FREE", or a star and "REPLAY+" (amber in its last days).
+fn plan_badge(ui: &mut egui::Ui, l: &crate::net::Library) -> egui::Response {
+    let soon = screens::library::ending_soon(l);
+    let (text, col) = match (l.is_sub(), soon) {
+        (true, Some(d)) => (format!("REPLAY+  {d}D"), AMBER),
+        (true, None) => ("REPLAY+".to_string(), GOLD),
+        _ => ("FREE".to_string(), MUTED),
+    };
+    let font = bold_font(11.5);
+    let g = ui.painter().layout_no_wrap(text.clone(), font.clone(), col);
+    let star = if l.is_sub() { 16.0 } else { 0.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 22.0 + star, 24.0), Sense::click());
+    let p = ui.painter();
+    let fill = if l.is_sub() { col.gamma_multiply(0.16) } else { rgba(255, 255, 255, 8) };
+    p.rect_filled(rect, 12.0, if resp.hovered() { col.gamma_multiply(0.26) } else { fill });
+    p.rect_stroke(rect, 12.0, Stroke::new(1.0, col.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+    if l.is_sub() {
+        icon(p, pos2(rect.left() + 15.0, rect.center().y), 12.0, Icon::Star, col);
+    }
+    p.text(pos2(rect.left() + 11.0 + star, rect.center().y), Align2::LEFT_CENTER, text, font, col);
+    let (name, line) = screens::library::plan_words(l);
+    resp.on_hover_text(format!("{name}: {line}. Open your replays."))
 }
 
 pub fn run() {

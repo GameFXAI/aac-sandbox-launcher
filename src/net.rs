@@ -6,7 +6,7 @@
 //! - Redirects are not followed, so a server cannot pass the password on to another address.
 //! - Nothing here writes the password or the ticket to a log or to disk.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::time::Duration;
 
@@ -139,6 +139,7 @@ pub fn explain(code: &str) -> String {
         "BadReport" => "the report was empty or too large".into(),
         "ReportsFull" => "the server takes no more reports right now".into(),
         "BadReplay" => "the server could not read that recording as a fight".into(),
+        "NoSuchReplay" => "that replay is not on the server any more".into(),
         "" => "the server refused the request".into(),
         other => format!("the server refused the request ({other})"),
     }
@@ -267,6 +268,69 @@ pub fn upload_replay(server: &Server, username: &str, cred: Cred, fight: &[u8]) 
             ureq::Error::Status(404, _) => "this server does not take recordings yet".to_string(),
             e => failed(e),
         })?;
+    Ok(())
+}
+
+/// One of the account's own recordings, as the server lists it. `n` is its stable number (it never changes while the
+/// recording exists; list positions do). `over_cap`: beyond the plan's cap since a downgrade, so the next recording
+/// that comes in drops it.
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Replay {
+    pub n: i32,
+    pub title: String,
+    /// when the fight started, Unix milliseconds
+    pub when: i64,
+    #[serde(rename = "self")]
+    pub me: String,
+    pub other: String,
+    pub over_cap: bool,
+}
+
+/// The Library: the account's plan as the server has it, how many recordings that plan keeps, and the recordings,
+/// newest first. Every number here is the server's: the launcher shows it and never works one out itself.
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Library {
+    /// "free" or "sub"
+    pub plan: String,
+    /// when a sub ends (UTC, ISO 8601); none on the free plan
+    pub plan_expires_at: Option<String>,
+    pub cap: u32,
+    /// where "Upgrade" points; empty: no button
+    pub upgrade_url: String,
+    pub replays: Vec<Replay>,
+}
+
+impl Library {
+    pub fn is_sub(&self) -> bool {
+        self.plan == "sub"
+    }
+}
+
+/// The account's recordings and plan (POST /api/replays/list): the credentials go in the body, never in the address.
+pub fn list_replays(server: &Server, username: &str, cred: Cred) -> Result<Library, String> {
+    let mut body = serde_json::json!({ "username": username });
+    cred.put(&mut body);
+    let r = agent().post(&format!("{}/api/replays/list", api_url(server)?)).send_json(body).map_err(|e| match e {
+        ureq::Error::Status(404, _) => "this server has no replay library yet".to_string(),
+        e => failed(e),
+    })?;
+    r.into_json().map_err(|e| format!("the server's answer was not understood: {e}"))
+}
+
+/// Deletes one of the account's recordings by its stable number (POST /api/replays/delete). The server checks it is
+/// this account's own; a number it does not find is "not on the server any more".
+pub fn delete_replay(server: &Server, username: &str, cred: Cred, n: i32) -> Result<(), String> {
+    let mut body = serde_json::json!({ "username": username, "n": n });
+    cred.put(&mut body);
+    agent().post(&format!("{}/api/replays/delete", api_url(server)?)).send_json(body).map_err(|e| match e {
+        ureq::Error::Status(404, r) => match r.into_json::<Failure>().unwrap_or_default().error.as_str() {
+            "NoSuchReplay" => explain("NoSuchReplay"),
+            _ => "this server has no replay library yet".to_string(),
+        },
+        e => failed(e),
+    })?;
     Ok(())
 }
 
@@ -457,6 +521,43 @@ mod tests {
         h.join().unwrap();
         let (s, h) = serve_once("404 Not Found", "");
         assert_eq!(login(&s, "friend", Cred::Password("wrong"), false).err(), Some("this server has no account API".into()));
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn the_library_comes_with_the_plan_and_the_credentials_go_in_the_body() {
+        let (s, h) = serve_once("200 OK", r#"{"plan":"sub","planExpiresAt":"2027-01-01T00:00:00Z","cap":50,"upgradeUrl":"https://x.invalid/up","replays":[{"n":5,"title":"beat Opponent 0:42","when":1764000000005,"self":"You","other":"Opponent","overCap":false},{"n":4,"title":"lost to Opponent 1:10","when":1764000000004,"self":"You","other":"","overCap":true}]}"#);
+        let l = list_replays(&s, "friend", Cred::Session("ffee")).unwrap();
+        assert!(l.is_sub());
+        assert_eq!((l.cap, l.plan_expires_at.as_deref(), l.upgrade_url.as_str()), (50, Some("2027-01-01T00:00:00Z"), "https://x.invalid/up"));
+        assert_eq!(l.replays.len(), 2);
+        assert_eq!((l.replays[0].n, l.replays[0].me.as_str(), l.replays[0].other.as_str()), (5, "You", "Opponent"));
+        assert!(l.replays[1].over_cap && !l.replays[0].over_cap);
+        let sent = h.join().unwrap();
+        assert!(sent.starts_with("POST /api/replays/list "));
+        assert!(sent.contains(r#""session":"ffee""#) && sent.contains(r#""username":"friend""#));
+        // a free plan has no expiry; a server from before the library answers 404
+        let (s, h) = serve_once("200 OK", r#"{"plan":"free","planExpiresAt":null,"cap":3,"upgradeUrl":"","replays":[]}"#);
+        let l = list_replays(&s, "friend", Cred::Password("long enough")).unwrap();
+        assert!(!l.is_sub() && l.plan_expires_at.is_none() && l.replays.is_empty());
+        h.join().unwrap();
+        let (s, h) = serve_once("404 Not Found", "");
+        assert_eq!(list_replays(&s, "friend", Cred::Password("x")).err(), Some("this server has no replay library yet".into()));
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn a_delete_names_the_stable_number_and_a_gone_one_is_explained() {
+        let (s, h) = serve_once("200 OK", r#"{"deleted":4}"#);
+        delete_replay(&s, "friend", Cred::Session("ffee"), 4).unwrap();
+        let sent = h.join().unwrap();
+        assert!(sent.starts_with("POST /api/replays/delete "));
+        assert!(sent.contains(r#""n":4"#) && sent.contains(r#""session":"ffee""#));
+        let (s, h) = serve_once("404 Not Found", r#"{"error":"NoSuchReplay"}"#);
+        assert_eq!(delete_replay(&s, "friend", Cred::Session("ffee"), 9).err(), Some("that replay is not on the server any more".into()));
+        h.join().unwrap();
+        let (s, h) = serve_once("503 Service Unavailable", r#"{"error":"GameServerOffline"}"#);
+        assert!(delete_replay(&s, "friend", Cred::Session("ffee"), 4).err().unwrap().contains("game server"));
         h.join().unwrap();
     }
 

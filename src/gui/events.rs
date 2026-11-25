@@ -39,6 +39,10 @@ pub enum Event {
     RecAdmin(Result<String, String>),
     /// fights sent to the account's replays
     RecSent(Result<usize, String>),
+    /// the Library's list from the server
+    Library(Result<net::Library, String>),
+    /// a Library delete: the recording's number, and what the server said
+    ReplayDeleted(i32, Result<(), String>),
 }
 
 impl App {
@@ -79,6 +83,10 @@ impl App {
                             }
                         }
                         (Err(e), _) | (_, Err(e)) => {
+                            // a Watch from the Library waits for no game now
+                            if self.lib.pending.take().is_some() {
+                                self.lib.note = Some(Err(format!("Sign-in failed: {e}")));
+                            }
                             if e == net::explain("BadSession") {
                                 // the remembered sign-in ran out or was ended: the password once more
                                 self.saved = None;
@@ -164,13 +172,20 @@ impl App {
                     // a No is not an error: recording works, Windows asks at each AA Classic start
                     self.rec_note = Some(r);
                 }
+                Event::Library(r) => self.library_came(r),
+                Event::ReplayDeleted(n, r) => self.replay_deleted(n, r),
                 Event::RecSent(r) => {
                     self.rec_sending = false;
                     self.rec_read = None;
                     match r {
                         Ok(0) => {}
                         Ok(n) => {
-                            let l = format!("{n} new fight{} sent to your replays: watch {} in the arena's replay player.", if n == 1 { "" } else { "s" }, if n == 1 { "it" } else { "them" });
+                            // the Library's list is old now: again at once on its screen, else on the next visit
+                            self.lib.fresh = false;
+                            if self.tab == Tab::Library {
+                                self.fetch_library();
+                            }
+                            let l = format!("{n} new fight{} sent to your replays: watch {} in Replays.", if n == 1 { "" } else { "s" }, if n == 1 { "it" } else { "them" });
                             self.say(format!("recorder: {l}"));
                             self.rec_note = Some(Ok(l));
                         }
