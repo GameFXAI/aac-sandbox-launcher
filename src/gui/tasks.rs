@@ -266,6 +266,8 @@ impl App {
         match play(&self.paths, aac.as_ref(), self.cfg.mode, &l) {
             Ok(c) => {
                 self.say(format!("client started (pid {})", c.id()));
+                let lp = self.paths.clone();
+                crate::camera::start(c.id(), crate::addons::addon_dir(&self.paths), move |l| crate::core::log_line(&lp, &l));
                 self.child = Some((c, SystemTime::now()));
             }
             Err(e) => {

@@ -4,6 +4,7 @@
 mod addons;
 mod admin;
 mod art;
+mod camera;
 mod cli;
 mod core;
 mod find;

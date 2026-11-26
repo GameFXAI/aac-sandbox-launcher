@@ -21,6 +21,8 @@
 //!                                   and send your fights to your replays (see recorder.rs; send uses the remembered
 //!                                   sign-in when no --user is given)
 //!   aac-sandbox-launcher art                           put the signed AA REPLAY art in our copy (play does this too)
+//!   aac-sandbox-launcher camera-link --pid N [--addon-dir DIR]   point the game's camera at what the replay addon
+//!                                   asks (see camera.rs; play starts it by itself); for a client started elsewhere
 //!   aac-sandbox-launcher vault                        the client builds kept, by build id
 //!   aac-sandbox-launcher pack export <file> [--build ID]   one build as a file for a friend
 //!   aac-sandbox-launcher pack import <file> [--server <link>]   a friend's build into the vault
@@ -139,6 +141,8 @@ fn go(args: &[String]) -> Result<(), String> {
             let _ = cfg.save(&paths);
             log_line(&paths, &format!("client started, pid {}", child.id()));
             println!("client started, pid {}", child.id());
+            let lp = paths.clone();
+            crate::camera::start(child.id(), addons::addon_dir(&paths), move |l| log_line(&lp, &l));
             if flag(args, "--wait") {
                 let st = child.wait().map_err(|e| e.to_string())?;
                 println!("client exited: {st}");
@@ -330,6 +334,13 @@ fn go(args: &[String]) -> Result<(), String> {
             for l in lines {
                 println!("moved: {l}");
             }
+        }
+        "camera-link" => {
+            let pid: u32 = opt(args, "--pid").ok_or("--pid is required")?.parse().map_err(|_| "--pid is a number")?;
+            let dir = opt(args, "--addon-dir").map(PathBuf::from).unwrap_or_else(|| addons::addon_dir(&paths));
+            println!("camera link for pid {pid}, addons in {}", dir.display());
+            crate::camera::run(pid, &dir, &|| false, &|l| println!("{l}"))?;
+            println!("the game ended");
         }
         "art" => match crate::art::ensure(&paths) {
             Some(line) => println!("{line}"),
