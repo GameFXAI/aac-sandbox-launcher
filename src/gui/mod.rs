@@ -244,6 +244,7 @@ struct App {
     aac_how: Option<&'static str>,
     /// recording AA Classic, as last read (every two seconds)
     rec: recorder::Readiness,
+    confirm_live_recording: bool,
     rec_read: Option<std::time::Instant>,
     /// setting up: what it is doing
     rec_busy: Option<String>,
@@ -328,6 +329,7 @@ impl App {
             report: None,
             aac_how,
             rec: Default::default(),
+            confirm_live_recording: false,
             rec_read: None,
             rec_busy: None,
             rec_note: None,
@@ -499,7 +501,7 @@ impl App {
             Action::SignIn => self.sign_in(),
             Action::SignUp => self.start_signup(),
             Action::Report => {
-                self.report = Some(ReportForm { logs: true, ..Default::default() });
+                self.report = Some(ReportForm::default());
             }
             Action::SendReport => self.send_report(),
             Action::SignOut => self.sign_out(),
@@ -567,7 +569,7 @@ impl App {
             }
             Action::Transfer => self.start_transfer(),
             Action::UndoTransfer => self.start_undo(),
-            Action::RecOn => self.rec_on(),
+            Action::RecOn => self.confirm_live_recording = self.rec_busy.is_none(),
             Action::RecAdmin => self.rec_admin(),
             Action::RecOff => {
                 self.rec_note = Some(recorder::turn_off(&self.paths).map(|()| "Recording is off. What it recorded is kept.".to_string()));
@@ -671,6 +673,7 @@ impl eframe::App for App {
             self.offer_dialog(&ctx, &mut act);
         }
         self.report_dialog(&ctx, &mut act);
+        self.live_recording_dialog(&ctx);
         self.share_dialog(&ctx, &mut act);
         shell::resize_edges(root, full);
         // a hairline around the borderless window

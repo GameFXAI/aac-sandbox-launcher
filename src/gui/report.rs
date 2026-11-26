@@ -20,8 +20,14 @@ pub struct ReportForm {
 /// The last `max` bytes of a text file, with anything that looks like a ticket or a sign-in (64 hex) blanked.
 fn log_tail(path: &std::path::Path, max: usize) -> String {
     let Ok(b) = std::fs::read(path) else { return String::new() };
-    let from = b.len().saturating_sub(max);
-    let text = String::from_utf8_lossy(&b[from..]).to_string();
+    redact_log_tail(&b, max)
+}
+
+fn redact_log_tail(bytes: &[u8], max: usize) -> String {
+    let from = bytes.len().saturating_sub(max);
+    let text = String::from_utf8_lossy(&bytes[from..]);
+    // A hex run clipped at the start can be part of a token even if fewer than 64 digits remain.
+    let mut clipped_run = from > 0 && bytes[from - 1].is_ascii_hexdigit();
     let mut out = String::with_capacity(text.len());
     let mut run = String::new();
     for c in text.chars().chain(Some('\n')) {
@@ -29,11 +35,12 @@ fn log_tail(path: &std::path::Path, max: usize) -> String {
             run.push(c);
             continue;
         }
-        if run.len() >= 64 {
+        if !run.is_empty() && (clipped_run || run.len() >= 64) {
             out.push_str("<hidden>");
         } else {
             out.push_str(&run);
         }
+        clipped_run = false;
         run.clear();
         out.push(c);
     }
@@ -95,7 +102,7 @@ impl App {
                 ui.add(TextEdit::multiline(&mut form.text).desired_rows(6).desired_width(f32::INFINITY).hint_text("e.g. the game closed when I entered the arena"))
                     .labelled_by(ask.id);
                 ui.checkbox(&mut form.logs, RichText::new("Include the launcher's log and the game's log").size(13.0).color(INK))
-                    .on_hover_text("launcher.log and ArcheAge.log from this launcher's own folder. Sign-in tokens in them are blanked; no password is ever in them.");
+                    .on_hover_text("Attaches recent lines from the AA Replay launcher and sandbox game logs. Long hexadecimal values are hidden. The logs may contain character names or local file paths.");
                 ui.add_space(6.0);
                 match &form.done {
                     Some(Ok(t)) => {
@@ -129,5 +136,21 @@ impl App {
         if close {
             self.report = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_log_tail;
+
+    #[test]
+    fn hides_a_complete_token_and_one_cut_by_the_tail_limit() {
+        let token = "ab".repeat(32);
+        let rest = " game error at 0x1234";
+        let log = format!("ticket={token}{rest}");
+        assert_eq!(redact_log_tail(log.as_bytes(), log.len()), format!("ticket=<hidden>{rest}"));
+        assert_eq!(redact_log_tail(log.as_bytes(), rest.len() + 6), format!("<hidden>{rest}"));
+        assert_eq!(redact_log_tail(log.as_bytes(), rest.len()), rest);
+        assert_eq!(redact_log_tail(log.as_bytes(), 0), "");
     }
 }

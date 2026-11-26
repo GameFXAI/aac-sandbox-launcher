@@ -160,11 +160,9 @@ impl App {
         let mut lines: Vec<(String, Color32)> = Vec::new();
         if let Some(b) = &self.rec_busy {
             lines.push((b.clone(), INK));
-            lines.push(("The recorder is about 47 MB. Nothing is installed outside the launcher's folder.".into(), MUTED));
+            lines.push(("The recorder download is about 47 MB.".into(), MUTED));
         } else if !rec.set_up {
-            lines.push(("Play AA Classic as usual: your fights become captures here, hit by hit.".into(), INK));
-            lines.push(("Only your own fights are kept, and other players' names are taken out on this PC.".into(), MUTED));
-            lines.push((crate::admin::WHY.into(), MUTED));
+            lines.push(("Record fights from live AA Classic to watch in AA Replay.".into(), INK));
         } else {
             let problem = st.problem.is_some();
             for (i, w) in recorder::summary(&rec).into_iter().enumerate() {
@@ -200,7 +198,7 @@ impl App {
                     ui.add(egui::Spinner::new().color(GOLD));
                 } else if !rec.set_up {
                     if primary_button(ui, "Set up recording", None, false, 0.0, 34.0, true)
-                        .on_hover_text("Downloads the recorder, starts it, and starts it with Windows. Windows then asks once for admin rights, because AA Classic runs as admin: answer Yes, and it never asks again.")
+                        .on_hover_text("Review how live recording works before turning it on.")
                         .clicked()
                     {
                         *act = Some(Action::RecOn);
@@ -222,6 +220,36 @@ impl App {
                 }
             });
         });
+    }
+
+    pub(in crate::gui) fn live_recording_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_live_recording {
+            return;
+        }
+
+        let modal = egui::Modal::new(egui::Id::unique("confirm-live-recording")).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.heading("Enable live AA Classic recording?");
+            ui.label(RichText::new("We haven't verified AA Classic's approval. Recording can put your live account at risk.").color(AMBER));
+            ui.label("The recorder attaches to AA Classic and routes its connection through a local relay. It requests Windows administrator access and starts with Windows when enabled.");
+            ui.label("For sessions it records, the recorder suppresses the game's crash and performance uploads. Raw captures stay on this PC. Converted fights can include both character names and a thumbnail and are sent to AA Replay.");
+            ui.hyperlink_to("AA Classic terms", "https://aa-classic.com/terms");
+            ui.horizontal(|ui| {
+                let cancel = outline_button(ui, "Cancel", None, false, 0.0, 34.0, false).clicked();
+                let enable = primary_button(ui, "Enable recording", None, false, 0.0, 34.0, true).clicked();
+                (cancel, enable)
+            }).inner
+        });
+
+        let (cancel, enable) = modal.inner;
+        if enable {
+            self.confirm_live_recording = false;
+            if self.rec_busy.is_none() {
+                self.rec_on();
+            }
+        } else if cancel || modal.should_close() {
+            self.confirm_live_recording = false;
+        }
     }
 
     /// The first start's one-time offer, over everything: AA Classic's settings into this client, then the game.
