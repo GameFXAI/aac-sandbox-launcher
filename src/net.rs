@@ -272,6 +272,41 @@ pub fn upload_replay(server: &Server, username: &str, cred: Cred, fight: &[u8]) 
     Ok(())
 }
 
+/// Sends the real picture of a recording the account uploaded (a JPEG the recorder took during the fight), keyed by the
+/// fight file's sha-256. Ok(false): the server has not listed that fight yet (the game server takes it in a moment
+/// after the upload); try again later.
+pub fn upload_picture(server: &Server, username: &str, cred: Cred, sha: &str, jpeg: &[u8]) -> Result<bool, String> {
+    use base64::Engine;
+    let mut body = serde_json::json!({ "username": username, "sha": sha, "jpeg": base64::engine::general_purpose::STANDARD.encode(jpeg) });
+    cred.put(&mut body);
+    match agent().post(&format!("{}/api/replays/thumb", api_url(server)?)).send_json(body) {
+        Ok(_) => Ok(true),
+        Err(ureq::Error::Status(404, _)) => Ok(false),
+        Err(e) => Err(failed(e)),
+    }
+}
+
+/// A picture the server keeps: `path` with these fields, signed in. Ok(None): there is none (or it may not be seen).
+pub fn picture(server: &Server, path: &str, username: &str, cred: Cred, fields: serde_json::Value) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+    let mut body = serde_json::json!({ "username": username });
+    if let (Some(b), Some(f)) = (body.as_object_mut(), fields.as_object()) {
+        for (k, v) in f {
+            b.insert(k.clone(), v.clone());
+        }
+    }
+    cred.put(&mut body);
+    match agent().post(&format!("{}/api{path}", api_url(server)?)).send_json(body) {
+        Ok(r) => {
+            let mut b = Vec::new();
+            r.into_reader().take(256 * 1024).read_to_end(&mut b).map_err(|e| format!("the picture did not arrive: {e}"))?;
+            Ok(Some(b))
+        }
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(e) => Err(failed(e)),
+    }
+}
+
 /// One of the account's own recordings, as the server lists it. `n` is its stable number (it never changes while the
 /// recording exists; list positions do). `over_cap`: beyond the plan's cap since a downgrade, so the next recording
 /// that comes in drops it.
@@ -290,6 +325,8 @@ pub struct Replay {
     pub name: Option<String>,
     /// who it is shared with, one entry per share; empty: private
     pub shares: Vec<ReplayShare>,
+    /// the server has a real picture of it (taken by the recorder during the fight)
+    pub thumb: bool,
 }
 
 /// One share of a recording, as the library lists it.

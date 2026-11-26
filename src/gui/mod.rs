@@ -257,6 +257,8 @@ struct App {
     hub: Hub,
     /// the moment pictures (pictures.rs)
     pics: pictures::Pictures,
+    /// the recordings' real pictures, as they come from the server
+    thumbs: pictures::Thumbs,
 }
 
 impl App {
@@ -334,6 +336,7 @@ impl App {
             lib: Lib { share_on_load: std::env::var("AAEMU_SANDBOX_TAB").as_deref() == Ok("share"), ..Default::default() },
             hub: Hub::default(),
             pics,
+            thumbs: Default::default(),
         };
         if let Some(s) = &a.saved {
             a.cfg.username = s.username.clone();
@@ -390,6 +393,42 @@ impl App {
     }
 
     /// The account name and what proves it: the remembered sign-in, else the password typed now.
+    /// A recording's picture: the real one from the game when the server has it, else its drawn still.
+    pub(in crate::gui) fn rec_pic(&self, r: &crate::net::Replay) -> eframe::egui::TextureHandle {
+        self.thumbs.get(pictures::Thumb::Own(r.n), r.thumb).unwrap_or_else(|| self.pics.for_recording(r.n).clone())
+    }
+
+    /// A shared moment's picture: the real one when the server has it, else its kind's drawn still.
+    pub(in crate::gui) fn share_pic(&self, s: &crate::shares::Share) -> eframe::egui::TextureHandle {
+        self.thumbs.get(pictures::Thumb::Share(s.id), s.thumb).unwrap_or_else(|| self.pics.for_share(&s.kind, s.id).clone())
+    }
+
+    /// The real pictures the cards asked for this frame, fetched one after another on a thread.
+    fn fetch_pictures(&mut self) {
+        let want = self.thumbs.take_wanted();
+        if want.is_empty() {
+            return;
+        }
+        let server = crate::net::Server::parse(&self.cfg.login_ip).ok();
+        let secret = self.secret();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            for key in want {
+                let img = match (&server, &secret) {
+                    (Some(s), Some((user, secret))) => {
+                        let (path, fields) = match key {
+                            pictures::Thumb::Own(n) => ("/replays/thumb/get", serde_json::json!({ "n": n })),
+                            pictures::Thumb::Share(id) => ("/shares/thumb", serde_json::json!({ "share": id })),
+                        };
+                        crate::net::picture(s, path, user, secret.cred(), fields).ok().flatten().and_then(|b| pictures::decode(&b))
+                    }
+                    _ => None,
+                };
+                let _ = tx.send(Event::Picture(key, img));
+            }
+        });
+    }
+
     pub(in crate::gui) fn secret(&self) -> Option<(String, Secret)> {
         if let Some(s) = &self.saved {
             return Some((s.username.clone(), Secret::Session(s.session.clone())));
@@ -569,6 +608,7 @@ impl eframe::App for App {
         let ctx = root.ctx().clone();
         self.poll(&ctx);
         self.keep_fresh();
+        self.fetch_pictures();
         // the first seconds: the window settles to its size and scale, so draw it again until it has
         if ctx.input(|i| i.time) < 3.0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));

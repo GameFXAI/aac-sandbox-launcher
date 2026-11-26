@@ -486,6 +486,8 @@ pub fn readiness(paths: &Paths) -> Readiness {
 struct Sent {
     /// file name -> the server's account it went to
     files: std::collections::BTreeMap<String, String>,
+    /// fight file name -> the account its picture went to
+    pictures: std::collections::BTreeMap<String, String>,
 }
 
 fn sent_file(paths: &Paths) -> PathBuf {
@@ -550,9 +552,77 @@ pub fn send_new(paths: &Paths, account: &str, send: &dyn Fn(&[u8]) -> Result<(),
     Ok(n)
 }
 
-/// Sends the new fights to the account's replays on `server`.
+/// The biggest picture the server keeps (Thumbs.MaxBytes, MaxWidth x MaxHeight on the server).
+pub const PICTURE_BYTES: usize = 64 * 1024;
+pub const PICTURE_W: u32 = 640;
+pub const PICTURE_H: u32 = 360;
+
+/// A picture as the server takes it: the recorder's JPEG as it is when it fits, else scaled to 480 wide and encoded
+/// again; None when it is not a picture at all.
+pub fn fit_picture(jpeg: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok()?;
+    if jpeg.len() <= PICTURE_BYTES && img.width() <= PICTURE_W && img.height() <= PICTURE_H && img.width() >= 16 && img.height() >= 16 {
+        return Some(jpeg.to_vec());
+    }
+    let small = img.resize(480, 270, image::imageops::FilterType::Triangle).to_rgb8();
+    for quality in [82u8, 70, 55, 40] {
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality).encode_image(&small).ok()?;
+        if out.len() <= PICTURE_BYTES {
+            return Some(out);
+        }
+    }
+    None
+}
+
+fn sha_upper(b: &[u8]) -> String {
+    sha_hex(b).to_ascii_uppercase()
+}
+
+/// Sends the picture of every fight already sent to this account that has one (`<fight>.jpg` beside it, from the
+/// recorder) and whose picture did not go yet. `put(sha, jpeg)`: Ok(true) kept, Ok(false) the server has not listed
+/// that fight yet (tried again next time). Returns how many went; a picture is never worth failing the send for, so an
+/// error only stops this round.
+pub fn send_pictures(paths: &Paths, account: &str, put: &dyn Fn(&str, &[u8]) -> Result<bool, String>) -> usize {
+    let mut sent = load_sent(paths);
+    let mut n = 0;
+    let all = fights(paths);
+    let skip = all.len().saturating_sub(SEND_AT_MOST);
+    for p in all.into_iter().skip(skip) {
+        let name = name_of(&p);
+        if sent.files.get(&name).map(String::as_str) != Some(account) || sent.pictures.get(&name).map(String::as_str) == Some(account) {
+            continue;
+        }
+        let Ok(jpeg) = fs::read(p.with_extension("jpg")) else { continue };
+        let Ok(fight) = fs::read(&p) else { continue };
+        let Some(picture) = fit_picture(&jpeg) else {
+            sent.pictures.insert(name, account.to_string()); // not a picture: never tried again
+            continue;
+        };
+        match put(&sha_upper(&fight), &picture) {
+            Ok(true) => {
+                sent.pictures.insert(name, account.to_string());
+                n += 1;
+            }
+            Ok(false) => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = fs::write(sent_file(paths), serde_json::to_vec_pretty(&sent).unwrap_or_default());
+    n
+}
+
+/// Sends the new fights to the account's replays on `server`, then their pictures.
 pub fn send(paths: &Paths, server: &crate::net::Server, username: &str, cred: crate::net::Cred) -> Result<usize, String> {
-    send_new(paths, username, &|b| crate::net::upload_replay(server, username, cred, b))
+    let n = send_new(paths, username, &|b| crate::net::upload_replay(server, username, cred, b))?;
+    let put = |sha: &str, jpeg: &[u8]| crate::net::upload_picture(server, username, cred, sha, jpeg);
+    send_pictures(paths, username, &put);
+    if n > 0 {
+        // the game server lists a fight a moment after it came in: its picture is taken then
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        send_pictures(paths, username, &put);
+    }
+    Ok(n)
 }
 
 /// The card's words, in order: what it is doing, what is wrong with its fix, the last recording, what was sent.
@@ -715,5 +785,61 @@ mod tests {
         assert_eq!(*got.borrow(), (2..12).collect::<Vec<u8>>());
         assert_eq!(send_new(&paths, "tester", &|_| panic!("nothing new")).unwrap(), 0);
         assert_eq!(sent_and_waiting(&paths), (10, 0)); // the two oldest are never sent
+    }
+
+    /// A JPEG of w x h with some detail (so it does not shrink to nothing), at this quality.
+    fn jpeg(w: u32, h: u32, quality: u8) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 7 % 251) as u8, (y * 13 % 241) as u8, ((x ^ y) % 256) as u8]));
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality).encode_image(&img).unwrap();
+        out
+    }
+
+    #[test]
+    fn a_picture_that_fits_goes_as_it_is_and_a_big_one_is_made_small() {
+        let small = jpeg(480, 270, 82);
+        assert!(small.len() <= PICTURE_BYTES);
+        assert_eq!(fit_picture(&small).unwrap(), small);
+        let big = jpeg(1920, 1080, 95);
+        let fitted = fit_picture(&big).unwrap();
+        assert!(fitted.len() <= PICTURE_BYTES);
+        let img = image::load_from_memory(&fitted).unwrap();
+        assert_eq!((img.width(), img.height()), (480, 270));
+        assert!(fit_picture(b"not a picture").is_none());
+    }
+
+    #[test]
+    fn pictures_go_once_after_their_fight_and_wait_while_the_server_has_not_listed_it() {
+        let root = tmp("pictures");
+        let paths = Paths::at(&root);
+        let fd = data_dir(&paths).join("fights");
+        fs::create_dir_all(&fd).unwrap();
+        let pic = jpeg(480, 270, 82);
+        for i in 0..3u8 {
+            fs::write(fd.join(format!("c-0-{i}.fight")), vec![i; 20]).unwrap();
+        }
+        fs::write(fd.join("c-0-0.jpg"), &pic).unwrap();
+        fs::write(fd.join("c-0-1.jpg"), &pic).unwrap();
+        // c-0-2 has no picture
+        send_new(&paths, "tester", &|_| Ok(())).unwrap();
+        let got = std::cell::RefCell::new(Vec::new());
+        let listed = std::cell::Cell::new(false);
+        let put = |sha: &str, jpeg: &[u8]| -> Result<bool, String> {
+            assert_eq!(jpeg, &pic[..]);
+            if !listed.get() && sha == sha_upper(&[1u8; 20]) {
+                return Ok(false); // the game server has not listed c-0-1 yet
+            }
+            got.borrow_mut().push(sha.to_string());
+            Ok(true)
+        };
+        assert_eq!(send_pictures(&paths, "tester", &put), 1);
+        assert_eq!(*got.borrow(), vec![sha_upper(&[0u8; 20])]);
+        listed.set(true);
+        assert_eq!(send_pictures(&paths, "tester", &put), 1);
+        assert_eq!(send_pictures(&paths, "tester", &|_, _| panic!("each picture goes once")), 0);
+        // another account on this PC: its fights were not sent there, so neither are their pictures
+        assert_eq!(send_pictures(&paths, "someone else", &|_, _| panic!("not this account's fights")), 0);
+        assert_eq!(got.borrow().len(), 2);
+        assert!(got.borrow().iter().all(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())));
     }
 }

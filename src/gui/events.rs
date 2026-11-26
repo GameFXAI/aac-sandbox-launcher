@@ -47,6 +47,8 @@ pub enum Event {
     ReplayDeleted(i32, Result<(), String>),
     /// sharing, friends and the guild (screens/shares.rs)
     Shares(super::screens::shares::ShareEvent),
+    /// a recording's real picture came (None: there is none, or it could not be read)
+    Picture(super::pictures::Thumb, Option<egui::ColorImage>),
 }
 
 impl App {
@@ -209,6 +211,7 @@ impl App {
                 Event::Library(r) => self.library_came(r),
                 Event::ReplayDeleted(n, r) => self.replay_deleted(n, r),
                 Event::Shares(e) => self.shares_came(e),
+                Event::Picture(key, img) => self.thumbs.arrived(ctx, key, img),
                 Event::RecSent(r) => {
                     self.rec_sending = false;
                     self.rec_read = None;

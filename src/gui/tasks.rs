@@ -220,6 +220,7 @@ impl App {
         crate::library::forget_cached(&self.paths);
         self.lib = Default::default();
         self.hub = Default::default();
+        self.thumbs.clear();
         self.say("Signed out on this PC");
     }
 

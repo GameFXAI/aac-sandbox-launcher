@@ -88,6 +88,8 @@ pub struct Share {
     pub following: bool,
     pub replies: u32,
     pub saves: u32,
+    /// the server has a real picture of the recording (taken by the recorder during the fight)
+    pub thumb: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Default, PartialEq)]

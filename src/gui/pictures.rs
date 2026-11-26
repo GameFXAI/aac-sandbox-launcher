@@ -73,6 +73,77 @@ impl Pictures {
     }
 }
 
+/// A real picture of a recording: the game, taken by the recorder while the fight was on and kept by the server
+/// (Docs/Replay/watch-together.md section 1 in the server's repo). Own recordings by their number, shared ones by the
+/// share.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Thumb {
+    Own(i32),
+    Share(i64),
+}
+
+enum Slot {
+    Asked,
+    Ready(TextureHandle),
+    Missing,
+}
+
+/// The real pictures fetched so far. A card asks with `get` while it draws (so `&self`); the frame loop takes what was
+/// asked for and fetches it on a thread; until it is here, and when there is none, the card keeps its drawn still.
+#[derive(Default)]
+pub struct Thumbs {
+    slots: std::cell::RefCell<std::collections::HashMap<Thumb, Slot>>,
+    wanted: std::cell::RefCell<Vec<Thumb>>,
+}
+
+impl Thumbs {
+    /// The real picture when it is here. `has`: the server said it has one; asked for once.
+    pub fn get(&self, key: Thumb, has: bool) -> Option<TextureHandle> {
+        if !has {
+            return None;
+        }
+        let mut slots = self.slots.borrow_mut();
+        match slots.get(&key) {
+            Some(Slot::Ready(t)) => Some(t.clone()),
+            Some(_) => None,
+            None => {
+                slots.insert(key, Slot::Asked);
+                self.wanted.borrow_mut().push(key);
+                None
+            }
+        }
+    }
+
+    /// What cards asked for since the last call.
+    pub fn take_wanted(&self) -> Vec<Thumb> {
+        std::mem::take(&mut *self.wanted.borrow_mut())
+    }
+
+    pub fn arrived(&self, ctx: &egui::Context, key: Thumb, img: Option<ColorImage>) {
+        let slot = match img {
+            Some(ci) => Slot::Ready(ctx.load_texture(format!("{key:?}"), ci, TextureOptions::LINEAR)),
+            None => Slot::Missing,
+        };
+        self.slots.borrow_mut().insert(key, slot);
+    }
+
+    /// Signed out, or another account: nothing of the last one stays.
+    pub fn clear(&self) {
+        self.slots.borrow_mut().clear();
+        self.wanted.borrow_mut().clear();
+    }
+}
+
+/// A JPEG from the server as a picture to draw; None when it is not one, or bigger than any the server keeps.
+pub fn decode(jpeg: &[u8]) -> Option<ColorImage> {
+    let img = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok()?;
+    if img.width() > 1024 || img.height() > 1024 {
+        return None;
+    }
+    let rgb = img.to_rgb8();
+    Some(ColorImage::from_rgb([rgb.width() as usize, rgb.height() as usize], rgb.as_raw()))
+}
+
 /// The part of a picture that fills `rect` without stretching it (the middle of it, like CSS `cover`).
 pub fn cover(tex: &TextureHandle, rect: Rect) -> Rect {
     let [w, h] = tex.size();

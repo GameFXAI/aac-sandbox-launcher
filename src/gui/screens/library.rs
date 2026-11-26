@@ -407,7 +407,7 @@ impl App {
         p.rect_filled(rect, 11.0, if hov || picked { Color32::from_rgb(22, 22, 26) } else { PANEL });
         let thumb = Rect::from_min_size(rect.min, vec2(rect.width(), (rect.width() * 0.56).round()));
         let tint = if dim { Color32::from_gray(105) } else if hov { Color32::WHITE } else { Color32::from_gray(228) };
-        crate::gui::pictures::draw(&p, self.pics.for_recording(r.n), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, tint);
+        crate::gui::pictures::draw(&p, &self.rec_pic(r), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, tint);
         vgrad(&p, Rect::from_min_max(thumb.min, pos2(thumb.right(), thumb.top() + 44.0)), rgba(0, 0, 0, 120), rgba(0, 0, 0, 0));
         thumb_badge(&p, thumb.min + vec2(10.0, 10.0), if r.shares.is_empty() { Icon::Lock } else { Icon::People });
         let c = thumb.center();
@@ -458,7 +458,7 @@ impl App {
             p.rect_stroke(rect, 10.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
         }
         let thumb = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(107.0, 60.0));
-        crate::gui::pictures::draw(&p, self.pics.for_recording(r.n), thumb, 7, if r.over_cap { Color32::from_gray(105) } else { Color32::from_gray(230) });
+        crate::gui::pictures::draw(&p, &self.rec_pic(r), thumb, 7, if r.over_cap { Color32::from_gray(105) } else { Color32::from_gray(230) });
         let x = thumb.right() + 16.0;
         p.text(pos2(x, rect.top() + 16.0), Align2::LEFT_TOP, name_of(r), bold_font(15.0), if r.over_cap { MUTED } else { INK });
         let mut line = library::day(r.when, library::now_unix());
@@ -724,7 +724,7 @@ impl App {
         let guild: Option<Option<String>> = self.hub.social.data.as_ref().map(|s| s.guild.as_ref().map(|g| g.name.clone()));
         let busy = self.hub.busy.contains(&Op::Share(n));
         let mut close = false;
-        let pics = &self.pics;
+        let moment = self.rec_pic(&c);
         let Some(d) = self.hub.dialog.as_mut() else { return };
         egui::Area::new(egui::Id::NULL.with("share-clip")).order(egui::Order::Foreground).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
             let full = ctx.content_rect();
@@ -745,7 +745,7 @@ impl App {
 
             // the moment
             let thumb = Rect::from_min_size(pos2(x, r.top() + 84.0), vec2(168.0, 90.0));
-            crate::gui::pictures::draw(&p, pics.for_recording(c.n), thumb, 8, Color32::WHITE);
+            crate::gui::pictures::draw(&p, &moment, thumb, 8, Color32::WHITE);
             let tx = thumb.right() + 24.0;
             p.text(pos2(tx, thumb.top() + 20.0), Align2::LEFT_TOP, crate::gui::status_bar::fit(&p, &name_of(&c), r.right() - 32.0 - tx, bold_font(19.0)), bold_font(19.0), INK);
             let mut line = library::day(c.when, library::now_unix());

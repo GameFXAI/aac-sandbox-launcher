@@ -193,7 +193,7 @@ impl App {
         }
         p.rect_filled(rect, 11.0, if hov || picked { Color32::from_rgb(22, 22, 26) } else { PANEL });
         let thumb = Rect::from_min_size(rect.min, vec2(rect.width(), (rect.height() - 74.0).max(40.0)));
-        crate::gui::pictures::draw(&p, self.pics.for_share(&s.kind, s.id), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, if hov { Color32::WHITE } else { Color32::from_gray(228) });
+        crate::gui::pictures::draw(&p, &self.share_pic(s), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, if hov { Color32::WHITE } else { Color32::from_gray(228) });
         let tx = rect.left() + 20.0;
         p.text(pos2(tx, thumb.bottom() + 12.0), Align2::LEFT_TOP, crate::gui::status_bar::fit(&p, &share_title(s), rect.width() - 40.0, bold_font(17.0)), bold_font(17.0), INK);
         avatar(&p, pos2(tx + 10.0, thumb.bottom() + 52.0), 10.0, &s.by);
@@ -223,7 +223,7 @@ impl App {
             p.rect_stroke(rect, 10.0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
         }
         let thumb = Rect::from_min_size(rect.min + vec2(12.0, 10.0), vec2(if table { 160.0 } else { 254.0 }, rect.height() - 20.0));
-        crate::gui::pictures::draw(&p, self.pics.for_share(&s.kind, s.id), thumb, 7, Color32::from_gray(232));
+        crate::gui::pictures::draw(&p, &self.share_pic(s), thumb, 7, Color32::from_gray(232));
         let x = thumb.right() + 18.0;
         let state_x = rect.right() - 24.0;
         let by_x = rect.left() + width * 0.55;

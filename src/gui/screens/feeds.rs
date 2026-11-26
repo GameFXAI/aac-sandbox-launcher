@@ -274,7 +274,7 @@ impl App {
         let p = ui.painter().clone();
         self.card_frame(&p, rect, picked, hov);
         let thumb = Rect::from_min_size(rect.min, vec2(rect.width(), (rect.width() * 0.56).round()));
-        crate::gui::pictures::draw(&p, self.pics.for_share(&s.kind, s.id), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, if hov { Color32::WHITE } else { Color32::from_gray(228) });
+        crate::gui::pictures::draw(&p, &self.share_pic(s), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, if hov { Color32::WHITE } else { Color32::from_gray(228) });
         if s.saved {
             let b = Rect::from_min_size(pos2(thumb.right() - 38.0, thumb.top() + 10.0), vec2(28.0, 28.0));
             p.rect_filled(b, 7.0, gold_a(200));
@@ -306,7 +306,7 @@ impl App {
         let p = ui.painter().clone();
         self.card_frame(&p, rect, picked, hov);
         let thumb = Rect::from_min_size(rect.min, vec2(rect.width(), (rect.width() * 0.40).round()));
-        crate::gui::pictures::draw(&p, self.pics.for_share(&s.kind, s.id), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, if hov { Color32::WHITE } else { Color32::from_gray(228) });
+        crate::gui::pictures::draw(&p, &self.share_pic(s), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, if hov { Color32::WHITE } else { Color32::from_gray(228) });
         let tx = rect.left() + 18.0;
         let title = crate::gui::status_bar::fit(&p, &share_title(s), rect.width() - 36.0, bold_font(17.0));
         p.text(pos2(tx, thumb.bottom() + 12.0), Align2::LEFT_TOP, title, bold_font(17.0), INK);
@@ -327,7 +327,7 @@ impl App {
         let p = ui.painter().clone();
         self.card_frame(&p, rect, picked, hov);
         let thumb = Rect::from_min_size(rect.min, vec2((rect.width() * 0.57).round(), rect.height()));
-        crate::gui::pictures::draw(&p, self.pics.for_share(&s.kind, s.id), thumb, egui::CornerRadius { nw: 11, ne: 0, sw: 11, se: 0 }, if hov { Color32::WHITE } else { Color32::from_gray(232) });
+        crate::gui::pictures::draw(&p, &self.share_pic(s), thumb, egui::CornerRadius { nw: 11, ne: 0, sw: 11, se: 0 }, if hov { Color32::WHITE } else { Color32::from_gray(232) });
         if !s.other.trim().is_empty() {
             let b = Rect::from_min_size(thumb.min + vec2(14.0, 14.0), vec2(124.0, 28.0));
             p.rect_filled(b, 7.0, rgba(10, 10, 12, 200));
