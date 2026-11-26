@@ -45,6 +45,8 @@ pub enum Event {
     Library(Result<net::Library, String>),
     /// a Library delete: the recording's number, and what the server said
     ReplayDeleted(i32, Result<(), String>),
+    /// sharing, friends and the guild (screens/shares.rs)
+    Shares(super::screens::shares::ShareEvent),
 }
 
 impl App {
@@ -206,6 +208,7 @@ impl App {
                 }
                 Event::Library(r) => self.library_came(r),
                 Event::ReplayDeleted(n, r) => self.replay_deleted(n, r),
+                Event::Shares(e) => self.shares_came(e),
                 Event::RecSent(r) => {
                     self.rec_sending = false;
                     self.rec_read = None;

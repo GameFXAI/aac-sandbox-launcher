@@ -109,7 +109,7 @@ pub enum Cred<'a> {
 
 impl Cred<'_> {
     /// The fields a request carries for it.
-    fn put(&self, body: &mut serde_json::Value) {
+    pub(crate) fn put(&self, body: &mut serde_json::Value) {
         match self {
             Cred::Password(p) => body["password"] = (*p).into(),
             Cred::Session(s) => body["session"] = (*s).into(),
@@ -146,7 +146,7 @@ pub fn explain(code: &str) -> String {
     }
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).redirects(0).build()
 }
 
@@ -286,6 +286,19 @@ pub struct Replay {
     pub me: String,
     pub other: String,
     pub over_cap: bool,
+    /// the name the player gave it (Rename); none: the fight's own title
+    pub name: Option<String>,
+    /// who it is shared with, one entry per share; empty: private
+    pub shares: Vec<ReplayShare>,
+}
+
+/// One share of a recording, as the library lists it.
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ReplayShare {
+    pub id: i64,
+    /// "friends", "guild" or "community"
+    pub audience: String,
 }
 
 /// The Library: the account's plan as the server has it, how many recordings that plan keeps, and the recordings,
@@ -339,7 +352,6 @@ pub fn delete_replay(server: &Server, username: &str, cred: Cred, n: i32) -> Res
 /// lets the game server play it for this account once. The game's replay player then starts it by itself, in a game
 /// already open or once the game is in the world; the answer is how many seconds the grant lasts. Nothing is written
 /// for the game: the grant is the server's, bound to this account.
-#[allow(dead_code)] // the Shared with me, Community and Guild pages call it (companion app step 4)
 pub fn watch_share(server: &Server, username: &str, cred: Cred, share: i64) -> Result<u32, String> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]

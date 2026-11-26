@@ -29,6 +29,7 @@ use eframe::egui::{self, Rect, Stroke, pos2, vec2};
 use events::Event;
 use report::ReportForm;
 use screens::library::Lib;
+use screens::shares::{Do, Hub};
 use screens::transfer::Xfer;
 use std::process::Child;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -50,7 +51,7 @@ pub(in crate::gui) enum Section {
 }
 
 /// The page in the centre.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(in crate::gui) enum Page {
     /// the account's own recordings (screens/library.rs)
     Captures,
@@ -173,6 +174,10 @@ enum Action {
     WatchReplay(i32),
     /// the server's upgrade page (the only thing a real checkout will change is where it points)
     Upgrade,
+    /// Share clip: My captures with the dialog open for this capture (none: just My captures)
+    OpenShare(Option<i32>),
+    /// sharing, friends and the guild (screens/shares.rs)
+    Shares(Do),
 }
 
 /// What a sign-in proves the account with, kept only in memory (the password) or sealed on disk (the token).
@@ -248,6 +253,8 @@ struct App {
     rec_sent_at: Option<std::time::Instant>,
     /// My captures (screens/library.rs)
     lib: Lib,
+    /// shares, friends and the guild (screens/shares.rs)
+    hub: Hub,
     /// the moment pictures (pictures.rs)
     pics: pictures::Pictures,
 }
@@ -291,15 +298,19 @@ impl App {
             rx,
             child: None,
             state: Err(String::new()),
-            // start page, for screenshots: AAEMU_SANDBOX_TAB=library|shared|saved|community|guild|review|settings|log
+            // start page, for screenshots: AAEMU_SANDBOX_TAB=library|shared|saved|community|following|guild|
+            // guildshares|review|members|settings|log|share (My captures with Share clip open)
             page: match std::env::var("AAEMU_SANDBOX_TAB").as_deref() {
                 Ok("settings") => Page::Settings,
                 Ok("log") => Page::Log,
                 Ok("shared") => Page::SharedWithMe,
                 Ok("saved") => Page::Saved,
                 Ok("community") => Page::Discover,
+                Ok("following") => Page::Following,
                 Ok("guild") => Page::GuildHome,
+                Ok("guildshares") => Page::GuildShares,
                 Ok("review") => Page::Review,
+                Ok("members") => Page::Members,
                 _ => Page::Captures,
             },
             confirm: None,
@@ -320,7 +331,8 @@ impl App {
             rec_note: None,
             rec_sending: false,
             rec_sent_at: None,
-            lib: Lib::default(),
+            lib: Lib { share_on_load: std::env::var("AAEMU_SANDBOX_TAB").as_deref() == Ok("share"), ..Default::default() },
+            hub: Hub::default(),
             pics,
         };
         if let Some(s) = &a.saved {
@@ -534,6 +546,14 @@ impl App {
                     self.warn(e);
                 }
             }
+            Action::OpenShare(n) => {
+                self.page = Page::Captures;
+                if let Some(n) = n {
+                    self.lib.selected = Some(n);
+                    self.open_share(n);
+                }
+            }
+            Action::Shares(d) => self.shares_do(d),
         }
     }
 }
@@ -548,6 +568,7 @@ impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.poll(&ctx);
+        self.keep_fresh();
         // the first seconds: the window settles to its size and scale, so draw it again until it has
         if ctx.input(|i| i.time) < 3.0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
@@ -584,9 +605,21 @@ impl eframe::App for App {
                         self.captures_page(root, centre, &mut act);
                         self.captures_inspector(root, insp, &mut act);
                     }
-                    other => {
-                        screens::social::page(root, centre, other);
-                        screens::social::inspector(root, insp, other);
+                    Page::GuildHome => {
+                        self.guild_home(root, centre, &mut act);
+                        self.share_inspector(root, insp, &mut act);
+                    }
+                    Page::Review => {
+                        self.review_page(root, centre, &mut act);
+                        self.share_inspector(root, insp, &mut act);
+                    }
+                    Page::Members => {
+                        self.members_page(root, centre, &mut act);
+                        self.members_inspector(root, insp);
+                    }
+                    _ => {
+                        self.feed_page(root, centre, &mut act);
+                        self.share_inspector(root, insp, &mut act);
                     }
                 }
             }
@@ -598,6 +631,7 @@ impl eframe::App for App {
             self.offer_dialog(&ctx, &mut act);
         }
         self.report_dialog(&ctx, &mut act);
+        self.share_dialog(&ctx, &mut act);
         shell::resize_edges(root, full);
         // a hairline around the borderless window
         p.rect_stroke(full.shrink(0.5), 0.0, Stroke::new(1.0, rgba(255, 255, 255, 20)), egui::StrokeKind::Inside);

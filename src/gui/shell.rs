@@ -200,16 +200,9 @@ impl App {
 
         // Friends, at the bottom
         if section != Section::Account {
-            let top = rect.bottom() - 132.0;
+            let top = rect.bottom() - self.friends_height() - 8.0;
             rule(&p, inner.left() + 4.0, inner.right() - 4.0, top);
-            p.text(pos2(inner.left() + 8.0, top + 18.0), Align2::LEFT_TOP, "Friends", bold_font(15.0), INK);
-            let g = p.layout(
-                "Your in-game friends and what they are doing show here once the server shares them.".into(),
-                text_font(12.5),
-                MUTED,
-                w - 16.0,
-            );
-            p.galley(pos2(inner.left() + 8.0, top + 46.0), g, MUTED);
+            self.friends_block(ui, Rect::from_min_max(pos2(inner.left(), top), pos2(inner.right(), rect.bottom())));
         }
     }
 }

@@ -219,6 +219,7 @@ impl App {
         // the next account must not see this one's replays
         crate::library::forget_cached(&self.paths);
         self.lib = Default::default();
+        self.hub = Default::default();
         self.say("Signed out on this PC");
     }
 

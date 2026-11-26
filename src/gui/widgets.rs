@@ -153,13 +153,18 @@ pub fn link_button(ui: &mut egui::Ui, ic: Icon, label: &str, danger: bool) -> Re
 
 /// The search box: a magnifier and a frameless text field in one rounded box.
 pub fn search_box(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32, height: f32) -> Response {
+    input_box(ui, value, Icon::Search, hint, width, height)
+}
+
+/// A text field in a rounded box with an icon at its left (the search box, Write a reply).
+pub fn input_box(ui: &mut egui::Ui, value: &mut String, ic: Icon, hint: &str, width: f32, height: f32) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let id = ui.next_auto_id();
     let focused = ui.memory(|m| m.has_focus(id));
     let p = ui.painter().clone();
     p.rect_filled(rect, 9.0, Color32::from_rgb(17, 17, 20));
     p.rect_stroke(rect, 9.0, Stroke::new(1.0, if focused { gold_a(150) } else { EDGE }), egui::StrokeKind::Inside);
-    icon(&p, pos2(rect.left() + 22.0, rect.center().y), 17.0, Icon::Search, MUTED);
+    icon(&p, pos2(rect.left() + 22.0, rect.center().y), 17.0, ic, MUTED);
     let field = Rect::from_min_max(pos2(rect.left() + 42.0, rect.top()), pos2(rect.right() - 10.0, rect.bottom()));
     let r = ui.put(
         field,
@@ -363,6 +368,45 @@ pub fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, t
     let g = p.layout(detail.to_string(), text_font(12.5), MUTED, width - 56.0);
     p.galley(rect.left_top() + vec2(40.0, 44.0), g, MUTED);
     enabled && resp.clicked()
+}
+
+/// A tab or filter you pick one of: bronze when picked; `framed` draws a box around the others too.
+pub fn chip(ui: &mut egui::Ui, label: &str, picked: bool, framed: bool, height: f32) -> Response {
+    let g = ui.painter().layout_no_wrap(label.to_string(), medium_font(14.5), INK);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 34.0, height), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, picked, label));
+    let p = ui.painter();
+    let r = if framed { 9.0 } else { height / 2.0 };
+    if picked {
+        bronze(p, rect, r, 1.0);
+        p.rect_stroke(rect, r, Stroke::new(1.2, gold_a(170)), egui::StrokeKind::Inside);
+    } else {
+        if resp.hovered() {
+            p.rect_filled(rect, r, rgba(255, 255, 255, 10));
+        }
+        if framed {
+            p.rect_stroke(rect, r, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+        }
+    }
+    p.galley(rect.center() - g.size() / 2.0, g, if picked { INK } else { rgba(214, 212, 208, 255) });
+    resp
+}
+
+/// A small rounded label: "Needs review" (gold), "Reviewed" (a tick, outlined).
+pub fn pill(p: &egui::Painter, right_center: egui::Pos2, label: &str, done: bool) -> Rect {
+    let g = p.layout_no_wrap(label.to_string(), medium_font(13.5), if done { INK } else { GOLD_HI });
+    let w = g.size().x + if done { 52.0 } else { 34.0 };
+    let r = Rect::from_min_size(pos2(right_center.x - w, right_center.y - 17.0), vec2(w, 34.0));
+    if done {
+        p.rect_stroke(r, 9.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+        icon(p, pos2(r.left() + 21.0, r.center().y), 16.0, Icon::CheckCircle, INK);
+        p.galley(pos2(r.left() + 38.0, r.center().y - g.size().y / 2.0), g, INK);
+    } else {
+        p.rect_filled(r, 9.0, gold_a(30));
+        p.rect_stroke(r, 9.0, Stroke::new(1.0, gold_a(110)), egui::StrokeKind::Inside);
+        p.galley(r.center() - g.size() / 2.0, g, GOLD_HI);
+    }
+    r
 }
 
 /// "INSTALL GAME" -> "Install game": buttons speak in sentences, not capitals.

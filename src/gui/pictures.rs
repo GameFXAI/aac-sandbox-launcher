@@ -56,6 +56,17 @@ impl Pictures {
         if n.rem_euclid(2) == 0 { &self.duel } else { &self.dawn }
     }
 
+    /// The picture for a shared moment: one of its kind's stills, the same one for the same share every time.
+    pub fn for_share(&self, kind: &str, id: i64) -> &TextureHandle {
+        let (a, b) = match kind {
+            "siege" => (&self.siege, &self.wall),
+            "naval" => (&self.naval, &self.fog),
+            "trade" => (&self.caravan, &self.port),
+            _ => (&self.duel, &self.dawn),
+        };
+        if id.rem_euclid(2) == 0 { a } else { b }
+    }
+
     /// The welcome page's picture.
     pub fn welcome(&self) -> &TextureHandle {
         &self.fog

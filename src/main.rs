@@ -17,6 +17,7 @@ mod pak;
 mod recorder;
 mod recording;
 mod settings;
+mod shares;
 mod signin;
 mod transfer;
 mod update;

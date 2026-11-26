@@ -83,10 +83,27 @@ impl App {
                 });
             }
         }
+        if let (Some(n), true) = (&self.hub.said, self.page != Page::Captures || self.lib.note.is_none()) {
+            return Some(match n {
+                Ok(t) => (GREEN, t.clone()),
+                Err(t) => (RED, t.clone()),
+            });
+        }
+        let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         match self.page {
             Page::Captures => {
                 let n = self.lib.data.as_ref()?.replays.len();
-                Some((MUTED, format!("{n} capture{}", if n == 1 { "" } else { "s" })))
+                Some((MUTED, plural(n, "capture", "captures")))
+            }
+            Page::SharedWithMe | Page::CommunityShared => Some((MUTED, format!("{} shared with you", self.hub.feed(crate::shares::Scope::WithMe)?.shares.len()))),
+            Page::Saved => Some((MUTED, format!("{} saved", self.hub.feed(crate::shares::Scope::Saved)?.shares.len()))),
+            Page::Discover => Some((MUTED, "Community".into())),
+            Page::Following => Some((MUTED, plural(self.hub.feed(crate::shares::Scope::Following)?.shares.len(), "post", "posts"))),
+            Page::GuildHome | Page::Members => Some((MUTED, self.hub.social.data.as_ref()?.guild.as_ref()?.name.clone())),
+            Page::GuildShares => Some((MUTED, plural(self.hub.feed(crate::shares::Scope::Guild)?.shares.len(), "guild share", "guild shares"))),
+            Page::Review => {
+                let r = self.hub.review.data.as_ref()?;
+                Some((MUTED, format!("{} of {} reviewed", r.done(), r.shares.len())))
             }
             _ => None,
         }
@@ -163,7 +180,11 @@ impl App {
 
 /// `text` cut to `width` with an ellipsis.
 pub fn elide(p: &egui::Painter, text: &str, width: f32) -> String {
-    let font = text_font(13.0);
+    fit(p, text, width, text_font(13.0))
+}
+
+/// `text` cut to `width` in `font` with an ellipsis.
+pub fn fit(p: &egui::Painter, text: &str, width: f32, font: egui::FontId) -> String {
     if width <= 20.0 {
         return String::new();
     }

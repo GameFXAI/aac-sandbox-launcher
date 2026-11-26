@@ -9,7 +9,9 @@
 
 use crate::gui::events::Event;
 use crate::gui::theme::*;
-use crate::gui::widgets::{EDGE, dropdown, empty_state, link_button, outline_button, primary_button, search_box, thumb_badge, view_toggle};
+use crate::gui::screens::shares::{Do, Op};
+use crate::gui::widgets::{EDGE, dropdown, empty_state, input_box, link_button, outline_button, primary_button, search_box, thumb_badge, view_toggle};
+use crate::shares::Audience;
 use crate::gui::{Action, App};
 use crate::library;
 use crate::net::{self, Library, Replay, Server};
@@ -51,6 +53,8 @@ pub struct Lib {
     pub sort: usize,
     /// list instead of grid
     pub list: bool,
+    /// open Share clip on the first capture once the list comes (AAEMU_SANDBOX_TAB=share, for screenshots)
+    pub share_on_load: bool,
 }
 
 impl Lib {
@@ -85,7 +89,7 @@ fn seconds(len: &str) -> Option<u32> {
 }
 
 /// 138 -> "2m 18s", 42 -> "42s".
-fn length_words(secs: u32) -> String {
+pub(in crate::gui) fn length_words(secs: u32) -> String {
     match (secs / 3600, secs % 3600 / 60, secs % 60) {
         (0, 0, s) => format!("{s}s"),
         (0, m, s) => format!("{m}m {s:02}s"),
@@ -94,7 +98,7 @@ fn length_words(secs: u32) -> String {
 }
 
 /// The capture's name as shown: the title without its length, starting with a capital.
-fn display_title(title: &str) -> String {
+pub(in crate::gui) fn display_title(title: &str) -> String {
     let head = split_length(title).0.trim();
     let mut c = head.chars();
     match c.next() {
@@ -103,19 +107,28 @@ fn display_title(title: &str) -> String {
     }
 }
 
+/// The capture's name as shown: the one the player gave it, else its fight's title.
+pub(in crate::gui) fn name_of(r: &Replay) -> String {
+    r.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| display_title(&r.title))
+}
+
 fn length_of(r: &Replay) -> Option<u32> {
     split_length(&r.title).1.and_then(seconds)
 }
 
-/// The captures the page shows: the search over title and names, the visibility filter (every capture is private
-/// until sharing exists on the server), then the sort.
+/// The captures the page shows: the search over title and names, the visibility filter (private: shared with no
+/// one, as the server lists it), then the sort.
 fn shown(l: &Library, query: &str, visibility: usize, sort: usize) -> Vec<Replay> {
     let q = query.trim().to_lowercase();
     let mut v: Vec<Replay> = l
         .replays
         .iter()
-        .filter(|r| q.is_empty() || r.title.to_lowercase().contains(&q) || r.other.to_lowercase().contains(&q) || r.me.to_lowercase().contains(&q))
-        .filter(|_| visibility != 2)
+        .filter(|r| q.is_empty() || [&r.title, &r.other, &r.me].iter().any(|t| t.to_lowercase().contains(&q)) || r.name.as_ref().is_some_and(|n| n.to_lowercase().contains(&q)))
+        .filter(|r| match visibility {
+            1 => r.shares.is_empty(),
+            2 => !r.shares.is_empty(),
+            _ => true,
+        })
         .cloned()
         .collect();
     match sort {
@@ -221,6 +234,13 @@ impl App {
                 }
                 if self.lib.confirm.is_some_and(|n| !l.replays.iter().any(|r| r.n == n)) {
                     self.lib.confirm = None;
+                }
+                if std::mem::take(&mut self.lib.share_on_load) {
+                    if let Some(n) = l.replays.first().map(|r| r.n) {
+                        self.lib.selected = Some(n);
+                        self.lib.data = Some(l.clone());
+                        self.open_share(n);
+                    }
                 }
                 self.lib.data = Some(l);
                 self.lib.error = None;
@@ -364,7 +384,7 @@ impl App {
         });
     }
 
-    fn empty_button(&mut self, ui: &mut egui::Ui, area: Rect, label: &str, a: Action, act: &mut Option<Action>) {
+    pub(in crate::gui) fn empty_button(&mut self, ui: &mut egui::Ui, area: Rect, label: &str, a: Action, act: &mut Option<Action>) {
         let c = pos2(area.center().x, area.top() + area.height() * 0.36 + 160.0);
         ui.scope_builder(UiBuilder::new().max_rect(Rect::from_center_size(c, vec2(240.0, 40.0))).layout(Layout::top_down(Align::Center)), |ui| {
             if primary_button(ui, label, None, false, 0.0, 38.0, true).clicked() {
@@ -389,7 +409,7 @@ impl App {
         let tint = if dim { Color32::from_gray(105) } else if hov { Color32::WHITE } else { Color32::from_gray(228) };
         crate::gui::pictures::draw(&p, self.pics.for_recording(r.n), thumb, egui::CornerRadius { nw: 11, ne: 11, sw: 0, se: 0 }, tint);
         vgrad(&p, Rect::from_min_max(thumb.min, pos2(thumb.right(), thumb.top() + 44.0)), rgba(0, 0, 0, 120), rgba(0, 0, 0, 0));
-        thumb_badge(&p, thumb.min + vec2(10.0, 10.0), Icon::Lock);
+        thumb_badge(&p, thumb.min + vec2(10.0, 10.0), if r.shares.is_empty() { Icon::Lock } else { Icon::People });
         let c = thumb.center();
         if dim {
             p.circle_filled(c, 20.0, rgba(0, 0, 0, 170));
@@ -401,7 +421,7 @@ impl App {
             icon(&p, c + vec2(1.5, 0.0), 18.0, Icon::Play, GOLD_HI);
         }
         let tx = rect.left() + 13.0;
-        let title = crate::gui::status_bar::elide(&p, &display_title(&r.title), rect.width() - 26.0);
+        let title = crate::gui::status_bar::fit(&p, &name_of(r), rect.width() - 26.0, bold_font(15.0));
         p.text(pos2(tx, thumb.bottom() + 11.0), Align2::LEFT_TOP, title, bold_font(15.0), if dim { MUTED } else { INK });
         let day = library::day(r.when, library::now_unix());
         p.text(pos2(tx, thumb.bottom() + 34.0), Align2::LEFT_TOP, if dim { "Past your plan's limit".to_string() } else { day }, text_font(13.0), if dim { AMBER } else { MUTED });
@@ -440,7 +460,7 @@ impl App {
         let thumb = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(107.0, 60.0));
         crate::gui::pictures::draw(&p, self.pics.for_recording(r.n), thumb, 7, if r.over_cap { Color32::from_gray(105) } else { Color32::from_gray(230) });
         let x = thumb.right() + 16.0;
-        p.text(pos2(x, rect.top() + 16.0), Align2::LEFT_TOP, display_title(&r.title), bold_font(15.0), if r.over_cap { MUTED } else { INK });
+        p.text(pos2(x, rect.top() + 16.0), Align2::LEFT_TOP, name_of(r), bold_font(15.0), if r.over_cap { MUTED } else { INK });
         let mut line = library::day(r.when, library::now_unix());
         if !r.other.trim().is_empty() {
             line = format!("{line}  ·  with {}", r.other.trim());
@@ -449,7 +469,7 @@ impl App {
             line = "Past your plan's limit".into();
         }
         p.text(pos2(x, rect.top() + 40.0), Align2::LEFT_TOP, line, text_font(13.0), if r.over_cap { AMBER } else { MUTED });
-        icon(&p, pos2(rect.right() - 26.0, rect.center().y), 15.0, Icon::Lock, MUTED);
+        icon(&p, pos2(rect.right() - 26.0, rect.center().y), 15.0, if r.shares.is_empty() { Icon::Lock } else { Icon::People }, MUTED);
         if let Some(s) = length_of(r) {
             p.text(pos2(rect.right() - 48.0, rect.center().y), Align2::RIGHT_CENTER, length_words(s), text_font(13.5), rgba(214, 212, 208, 255));
         }
@@ -482,7 +502,7 @@ impl App {
 
         // who, where, how long
         let mut y = r.top() + 30.0;
-        let tg = p.layout(display_title(&c.title), title_font(25.0), INK, w);
+        let tg = p.layout(name_of(&c), title_font(25.0), INK, w);
         let th = tg.size().y;
         p.galley(pos2(x, y), tg, INK);
         y += th + 12.0;
@@ -551,8 +571,14 @@ impl App {
             }
             Launch::None => {
                 let can = !playing && !c.over_cap && !self.asking && !self.busy;
-                let b = Rect::from_min_size(pos2(x, y), vec2(w, 46.0));
-                let resp = ui.scope_builder(UiBuilder::new().max_rect(b), |ui| primary_button(ui, "Jump into ArcheAge", None, true, w, 46.0, can)).inner;
+                let sb = Rect::from_min_size(pos2(x, y), vec2(w, 46.0));
+                let share = ui.scope_builder(UiBuilder::new().max_rect(sb), |ui| primary_button(ui, "Share clip", Some(Icon::Share), false, w, 46.0, !c.over_cap)).inner;
+                let stip = if c.over_cap { "Past your plan's limit: this capture can't be shared" } else { "Share this moment with your friends, your guild or the community" };
+                if share.on_hover_text(stip).clicked() {
+                    *act = Some(Action::OpenShare(Some(c.n)));
+                }
+                let b = Rect::from_min_size(pos2(x, sb.bottom() + 12.0), vec2(w, 46.0));
+                let resp = ui.scope_builder(UiBuilder::new().max_rect(b), |ui| outline_button(ui, "Jump into ArcheAge", None, true, w, 46.0, false)).inner;
                 let tip = if playing {
                     "ArcheAge is running: open Replays in the game to watch this one"
                 } else if c.over_cap {
@@ -560,7 +586,7 @@ impl App {
                 } else {
                     "Starts ArcheAge and opens this moment once you're in the world"
                 };
-                if resp.on_hover_text(tip).clicked() {
+                if resp.on_hover_text(tip).clicked() && can {
                     *act = Some(Action::WatchReplay(c.n));
                 }
                 y = b.bottom() + 14.0;
@@ -606,8 +632,35 @@ impl App {
                 }
             });
             y = b.bottom() + 12.0;
+        } else if let Some((_, text)) = self.hub.rename.as_mut().filter(|(rn, _)| *rn == c.n) {
+            let busy = self.hub.busy.contains(&Op::Rename(c.n));
+            let (mut save, mut cancel) = (None, false);
+            ui.scope_builder(UiBuilder::new().max_rect(Rect::from_min_size(pos2(x, y), vec2(w, 40.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let f = input_box(ui, text, Icon::Pencil, "A name for this capture", w - 114.0, 40.0);
+                let enter = f.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (primary_button(ui, "Save", None, false, 66.0, 38.0, !busy).clicked() || enter) && !busy {
+                    save = Some(text.clone());
+                }
+                if icon_button(ui, Icon::Close, 32.0, "Keep the name it has", false).clicked() {
+                    cancel = true;
+                }
+            });
+            y += 46.0;
+            p.text(pos2(x, y), Align2::LEFT_TOP, "Empty: the fight's own title. Up to 64 characters.", text_font(12.0), FAINT);
+            y += 26.0;
+            if let Some(t) = save {
+                *act = Some(Action::Shares(Do::Rename(c.n, t)));
+            }
+            if cancel {
+                self.hub.rename = None;
+            }
         } else {
             ui.scope_builder(UiBuilder::new().max_rect(Rect::from_min_size(pos2(x - 2.0, y), vec2(w, 32.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+                ui.spacing_mut().item_spacing.x = 18.0;
+                if link_button(ui, Icon::Pencil, "Rename", false).on_hover_text("Give this capture a name of your own").clicked() {
+                    self.hub.rename = Some((c.n, c.name.clone().unwrap_or_default()));
+                }
                 if link_button(ui, Icon::Trash, "Delete", true).on_hover_text("Delete this capture from the server").clicked() {
                     self.lib.confirm = Some(c.n);
                     self.lib.note = None;
@@ -621,10 +674,34 @@ impl App {
         y += 26.0;
         caps(&p, pos2(x, y), "Sharing", MUTED);
         y += 30.0;
-        icon(&p, pos2(x + 10.0, y + 14.0), 20.0, Icon::Lock, INK);
-        p.text(pos2(x + 34.0, y), Align2::LEFT_TOP, "Private", bold_font(15.0), INK);
-        p.text(pos2(x + 34.0, y + 23.0), Align2::LEFT_TOP, "Only you can see this capture.", text_font(13.5), rgba(214, 212, 208, 255));
-        y += 58.0;
+        if c.shares.is_empty() {
+            icon(&p, pos2(x + 10.0, y + 14.0), 20.0, Icon::Lock, INK);
+            p.text(pos2(x + 34.0, y), Align2::LEFT_TOP, "Private", bold_font(15.0), INK);
+            p.text(pos2(x + 34.0, y + 23.0), Align2::LEFT_TOP, "Only you can see this capture.", text_font(13.5), rgba(214, 212, 208, 255));
+            y += 58.0;
+        } else {
+            let guild = self.hub.social.data.as_ref().and_then(|s| s.guild.as_ref().map(|g| g.name.clone()));
+            for sh in &c.shares {
+                let (ic, name, line) = match Audience::parse(&sh.audience) {
+                    Some(Audience::Guild) => (Icon::Shield, "Guild", guild.as_ref().map(|g| format!("Visible to members of {g}.")).unwrap_or_else(|| "Visible to your guild's members.".into())),
+                    Some(Audience::Community) => (Icon::Compass, "Community", "Anyone on this server can watch it.".to_string()),
+                    _ => (Icon::People, "Friends", "Visible to your friends.".to_string()),
+                };
+                icon(&p, pos2(x + 10.0, y + 14.0), 20.0, ic, GOLD);
+                p.text(pos2(x + 34.0, y), Align2::LEFT_TOP, name, bold_font(15.0), INK);
+                let line = crate::gui::status_bar::fit(&p, &line, w - 34.0 - 70.0, text_font(13.5));
+                p.text(pos2(x + 34.0, y + 23.0), Align2::LEFT_TOP, line, text_font(13.5), rgba(214, 212, 208, 255));
+                let busy = self.hub.busy.contains(&Op::Unshare(sh.id));
+                ui.scope_builder(UiBuilder::new().max_rect(Rect::from_min_size(pos2(x + w - 70.0, y), vec2(70.0, 26.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
+                    if busy {
+                        ui.add(egui::Spinner::new().size(14.0).color(MUTED));
+                    } else if ui.add(egui::Button::new(RichText::new("Stop").font(medium_font(13.5)).color(RED)).frame(false)).on_hover_text("Stop sharing it with them").clicked() {
+                        *act = Some(Action::Shares(Do::Unshare(sh.id)));
+                    }
+                });
+                y += 56.0;
+            }
+        }
         rule(&p, x, x + w, y);
 
         if let Some(l) = &data {
@@ -632,6 +709,140 @@ impl App {
             if plan.height() > 80.0 {
                 self.plan_box(ui, plan, l, act);
             }
+        }
+    }
+
+    /// The Share clip dialog: who to share with (friends, the guild, the community), a note, and Share. The server
+    /// checks the choice (a guild share needs a guild) and lists the share once it took it.
+    pub(in crate::gui) fn share_dialog(&mut self, ctx: &egui::Context, act: &mut Option<Action>) {
+        let Some(n) = self.hub.dialog.as_ref().map(|d| d.n) else { return };
+        let Some(c) = self.lib.data.as_ref().and_then(|l| l.replays.iter().find(|r| r.n == n).cloned()) else {
+            self.hub.dialog = None;
+            return;
+        };
+        // None: not known yet; Some(None): the server said there is no guild
+        let guild: Option<Option<String>> = self.hub.social.data.as_ref().map(|s| s.guild.as_ref().map(|g| g.name.clone()));
+        let busy = self.hub.busy.contains(&Op::Share(n));
+        let mut close = false;
+        let pics = &self.pics;
+        let Some(d) = self.hub.dialog.as_mut() else { return };
+        egui::Area::new(egui::Id::NULL.with("share-clip")).order(egui::Order::Foreground).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
+            let full = ctx.content_rect();
+            ui.painter().rect_filled(full, 0.0, rgba(0, 0, 0, 150));
+            // the dimmed backdrop takes the clicks, so nothing behind the dialog can be pressed
+            let _ = ui.interact(full, ui.scope_id().with("backdrop"), Sense::click_and_drag());
+            let r = Rect::from_center_size(full.center(), vec2(620.0, 590.0));
+            card(ui.painter(), r);
+            let p = ui.painter().clone();
+            let x = r.left() + 32.0;
+            let w = r.width() - 64.0;
+            p.text(pos2(x, r.top() + 28.0), Align2::LEFT_TOP, "Share clip", title_font(28.0), INK);
+            ui.scope_builder(UiBuilder::new().max_rect(Rect::from_center_size(pos2(r.right() - 40.0, r.top() + 46.0), vec2(34.0, 34.0))), |ui| {
+                if icon_button(ui, Icon::Close, 34.0, "Close", false).clicked() {
+                    close = true;
+                }
+            });
+
+            // the moment
+            let thumb = Rect::from_min_size(pos2(x, r.top() + 84.0), vec2(168.0, 90.0));
+            crate::gui::pictures::draw(&p, pics.for_recording(c.n), thumb, 8, Color32::WHITE);
+            let tx = thumb.right() + 24.0;
+            p.text(pos2(tx, thumb.top() + 20.0), Align2::LEFT_TOP, crate::gui::status_bar::fit(&p, &name_of(&c), r.right() - 32.0 - tx, bold_font(19.0)), bold_font(19.0), INK);
+            let mut line = library::day(c.when, library::now_unix());
+            if let Some(s) = length_of(&c) {
+                line = format!("{line}  ·  {}", length_words(s));
+            }
+            p.text(pos2(tx, thumb.top() + 52.0), Align2::LEFT_TOP, line, text_font(14.5), rgba(214, 212, 208, 255));
+            let mut y = thumb.bottom() + 18.0;
+            rule(&p, x, x + w, y);
+            y += 20.0;
+
+            // who with
+            p.text(pos2(x, y), Align2::LEFT_TOP, "Share with", medium_font(15.5), INK);
+            y += 30.0;
+            let seg = Rect::from_min_size(pos2(x, y), vec2(w, 44.0));
+            p.rect_stroke(seg, 9.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+            let third = w / 3.0;
+            for (k, a) in Audience::ALL.into_iter().enumerate() {
+                let b = Rect::from_min_size(pos2(x + third * k as f32, y), vec2(third, 44.0));
+                let resp = ui.interact(b, ui.scope_id().with(("aud", k)), Sense::click());
+                resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, d.audience == a, a.label()));
+                let on = d.audience == a;
+                if on {
+                    bronze(&p, b, 9.0, 1.2);
+                    p.rect_stroke(b, 9.0, Stroke::new(1.3, GOLD), egui::StrokeKind::Inside);
+                } else if resp.hovered() {
+                    p.rect_filled(b.shrink(1.0), 9.0, rgba(255, 255, 255, 8));
+                }
+                let ic = match a {
+                    Audience::Friends => Icon::People,
+                    Audience::Guild => Icon::Shield,
+                    Audience::Community => Icon::Compass,
+                };
+                let g = p.layout_no_wrap(a.label().to_string(), medium_font(15.0), INK);
+                let gw = g.size().x + 28.0;
+                let start = b.center().x - gw / 2.0;
+                icon(&p, pos2(start + 9.0, b.center().y), 17.0, ic, if on { GOLD_HI } else { INK });
+                p.galley(pos2(start + 28.0, b.center().y - g.size().y / 2.0), g, INK);
+                if resp.clicked() && !d.sending {
+                    d.audience = a;
+                }
+            }
+            y += 58.0;
+
+            // what that means
+            let no_guild = d.audience == Audience::Guild && matches!(guild, Some(None));
+            let (ic, name, sub) = match d.audience {
+                Audience::Friends => (Icon::People, "Your friends".to_string(), "Visible to your friends in ArcheAge.".to_string()),
+                Audience::Guild => match &guild {
+                    Some(Some(g)) => (Icon::Shield, g.clone(), "Visible to members of this guild.".to_string()),
+                    Some(None) => (Icon::Shield, "No guild".to_string(), "Your character is not in a guild. Join one in ArcheAge first.".to_string()),
+                    None => (Icon::Shield, "Your guild".to_string(), "Visible to members of your guild.".to_string()),
+                },
+                Audience::Community => (Icon::Compass, "Everyone on this server".to_string(), "Anyone signed in can watch it, save it and reply.".to_string()),
+            };
+            let ac = Rect::from_min_size(pos2(x, y), vec2(w, 78.0));
+            if no_guild {
+                p.rect_stroke(ac, 10.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+            } else {
+                bronze(&p, ac, 10.0, 0.8);
+                p.rect_stroke(ac, 10.0, Stroke::new(1.0, gold_a(110)), egui::StrokeKind::Inside);
+            }
+            icon(&p, pos2(ac.left() + 44.0, ac.center().y), 30.0, ic, if no_guild { MUTED } else { INK });
+            p.line_segment([pos2(ac.left() + 88.0, ac.top() + 18.0), pos2(ac.left() + 88.0, ac.bottom() - 18.0)], Stroke::new(1.0, EDGE));
+            p.text(pos2(ac.left() + 112.0, ac.top() + 16.0), Align2::LEFT_TOP, crate::gui::status_bar::fit(&p, &name, w - 130.0, bold_font(18.0)), bold_font(18.0), if no_guild { MUTED } else { INK });
+            p.text(pos2(ac.left() + 112.0, ac.top() + 46.0), Align2::LEFT_TOP, crate::gui::status_bar::fit(&p, &sub, w - 130.0, text_font(14.0)), text_font(14.0), rgba(214, 212, 208, 255));
+            y = ac.bottom() + 20.0;
+
+            // a note
+            p.text(pos2(x, y), Align2::LEFT_TOP, "Add a note (optional)", medium_font(15.0), INK);
+            y += 28.0;
+            let nb = Rect::from_min_size(pos2(x, y), vec2(w, 70.0));
+            ui.scope_builder(UiBuilder::new().max_rect(nb), |ui| {
+                ui.add_sized(nb.size(), egui::TextEdit::multiline(&mut d.note).font(text_font(15.0)).hint_text("Watch the gangplank at 00:42.").char_limit(280).desired_width(w).interactive(!d.sending));
+            });
+            y = nb.bottom() + 12.0;
+            if let Some(e) = &d.error {
+                p.text(pos2(x, y), Align2::LEFT_TOP, crate::gui::status_bar::fit(&p, e, w, text_font(13.0)), text_font(13.0), AMBER);
+            }
+
+            // Cancel, Share
+            let label = format!("Share to {}", d.audience.label().to_lowercase());
+            let br = Rect::from_min_max(pos2(x, r.bottom() - 64.0), pos2(r.right() - 32.0, r.bottom() - 22.0));
+            ui.scope_builder(UiBuilder::new().max_rect(br).layout(Layout::right_to_left(Align::Center)), |ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                if busy {
+                    ui.add(egui::Spinner::new().size(20.0).color(GOLD));
+                } else if primary_button(ui, &label, None, false, 0.0, 42.0, !no_guild).clicked() {
+                    *act = Some(Action::Shares(Do::Share(c.n, d.audience, d.note.clone())));
+                }
+                if outline_button(ui, "Cancel", None, false, 110.0, 42.0, false).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close && !busy {
+            self.hub.dialog = None;
         }
     }
 
@@ -689,7 +900,7 @@ mod tests {
     }
 
     fn rep(n: i32, title: &str, when: i64, other: &str) -> Replay {
-        Replay { n, title: title.into(), when, me: "Me".into(), other: other.into(), over_cap: false }
+        Replay { n, title: title.into(), when, me: "Me".into(), other: other.into(), ..Default::default() }
     }
 
     #[test]
@@ -701,8 +912,16 @@ mod tests {
         assert_eq!(ns(shown(&l, "", 0, 2)), vec![2, 3, 1]);
         assert_eq!(ns(shown(&l, "ivy", 0, 0)), vec![2, 3]);
         assert_eq!(ns(shown(&l, "", 1, 0)), vec![2, 3, 1]);
-        // nothing is shared until sharing exists on the server
         assert!(shown(&l, "", 2, 0).is_empty());
+        // shared ones, as the server lists their shares; a name of the player's own is searched too
+        let mut l = l;
+        l.replays[2].shares = vec![net::ReplayShare { id: 9, audience: "guild".into() }];
+        l.replays[0].name = Some("Gangplank hold".into());
+        assert_eq!(ns(shown(&l, "", 1, 0)), vec![2, 1]);
+        assert_eq!(ns(shown(&l, "", 2, 0)), vec![3]);
+        assert_eq!(ns(shown(&l, "gangplank", 0, 0)), vec![1]);
+        assert_eq!(name_of(&l.replays[0]), "Gangplank hold");
+        assert_eq!(name_of(&l.replays[1]), "Lost to Ivy");
     }
 
     #[test]
