@@ -128,14 +128,14 @@ impl App {
 
     pub(in crate::gui) fn start_play(&mut self) {
         // before signing in: a ticket is only good for two minutes
-        let running = crate::core::blocking_processes();
-        if !running.is_empty() {
-            return self.warn(format!("Close AA Classic first (its game or launcher is still open: {}). Both can't run at once.", running.join(", ")));
-        }
         let aac = match self.aac_if_needed() {
             Ok(a) => a,
             Err(e) => return self.warn(e),
         };
+        let running = crate::core::blocking_processes(&self.paths, aac.as_ref().map(crate::core::AacInstall::root));
+        if !running.is_empty() {
+            return self.warn(crate::core::blocked_message(&running));
+        }
         let Some((username, secret)) = self.secret() else {
             return self.warn("Sign in first.");
         };

@@ -117,7 +117,7 @@ impl App {
                             self.hint = None;
                             self.say(format!("Signed in as {name}"));
                             self.lib = Default::default();
-                            self.lib.data = crate::library::load_cached(&self.paths, &self.cfg.login_ip, &name);
+                            self.lib.data = crate::library::load_named(&self.paths, &self.cfg.login_ip, &name);
                             self.fetch_library();
                             if self.page.section() == crate::gui::Section::Account {
                                 self.page = Page::Captures;

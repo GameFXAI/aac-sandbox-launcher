@@ -3,6 +3,8 @@
 //! Library shows.
 //!
 //! - `<data>\recordings\library.json`  the last list, with the server and account it belongs to
+//! - `<data>\recordings\fights\index.json`  the recorder's own index: who fought whom by name, by each fight's
+//!   SHA-256. The fight files and the server only say "You" and "Opponent"; the names stay on this PC.
 //! - `<profile>\Documents\AAClassic\Addon\aac_replay\pending_watch.txt`  `{ n = 5, }`: the recording Play in the
 //!   Library asked for. The server's aac_replay addon takes it once when the game loads (it empties the file) and
 //!   watches that recording through the game's own replay player. The launcher never sees a fight's packets.
@@ -42,6 +44,41 @@ pub fn save_cached(paths: &Paths, server: &str, username: &str, library: &Librar
     if let Ok(b) = serde_json::to_vec_pretty(&c) {
         let _ = fs::write(file, b);
     }
+}
+
+/// Puts the fighters' real names on the recordings this PC recorded, from the recorder's index (matched by the fight
+/// file's SHA-256, which the server lists). The server never has these names and the launcher never sends them.
+pub fn name_fighters(paths: &Paths, library: &mut Library) {
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Names {
+        #[serde(rename = "self")]
+        me: String,
+        other: String,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Entry {
+        sha256: String,
+        names: Names,
+    }
+    let file = crate::recorder::data_dir(paths).join("fights").join("index.json");
+    let entries: Vec<Entry> = fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let by_sha: std::collections::HashMap<String, Names> =
+        entries.into_iter().filter(|e| !e.sha256.is_empty()).map(|e| (e.sha256.to_ascii_uppercase(), e.names)).collect();
+    for r in &mut library.replays {
+        if let Some(n) = r.sha.as_deref().and_then(|s| by_sha.get(&s.to_ascii_uppercase())) {
+            r.live_me = n.me.trim().to_string();
+            r.live_other = n.other.trim().to_string();
+        }
+    }
+}
+
+/// The last list with the fighters' names this PC knows.
+pub fn load_named(paths: &Paths, server: &str, username: &str) -> Option<Library> {
+    let mut l = load_cached(paths, server, username)?;
+    name_fighters(paths, &mut l);
+    Some(l)
 }
 
 /// Forgets the cached list (sign-out: the next account must not see this one's).
@@ -220,6 +257,38 @@ mod tests {
         let d = day(parse_iso("2026-11-10T12:00:00Z").unwrap() * 1000, now);
         assert!(d.contains("Nov") && !d.contains("2026"), "{d}");
         assert!(day(parse_iso("2025-01-21T12:00:00Z").unwrap() * 1000, now).ends_with("2025"));
+    }
+
+    #[test]
+    fn the_fighters_names_come_from_this_pcs_index_by_hash_and_are_never_cached() {
+        let p = tmp("names");
+        let fd = crate::recorder::data_dir(&p).join("fights");
+        fs::create_dir_all(&fd).unwrap();
+        fs::write(
+            fd.join("index.json"),
+            r#"[{"file":"a.fight","sha256":"ab12","names":{"self":"Zoë","other":"Qfqwf"}},{"file":"b.fight","names":{"self":"X","other":"Y"}}]"#,
+        )
+        .unwrap();
+        let mut l = Library {
+            replays: vec![
+                Replay { n: 1, sha: Some("AB12".into()), ..Default::default() },
+                Replay { n: 2, sha: Some("CD34".into()), ..Default::default() },
+                Replay { n: 3, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        name_fighters(&p, &mut l);
+        assert_eq!((l.replays[0].live_me.as_str(), l.replays[0].live_other.as_str()), ("Zoë", "Qfqwf"));
+        assert!(l.replays[1..].iter().all(|r| r.live_me.is_empty() && r.live_other.is_empty()));
+        // the cache (and anything else serialised from the list) never holds them
+        save_cached(&p, "https://a", "friend", &l);
+        let raw = String::from_utf8(fs::read(cache_file(&p)).unwrap()).unwrap();
+        assert!(!raw.contains("Qfqwf") && !raw.contains("Zoë"), "{raw}");
+        assert_eq!(load_named(&p, "https://a", "friend").unwrap().replays[0].live_other, "Qfqwf");
+        // no index: nothing named, nothing breaks
+        fs::remove_file(fd.join("index.json")).unwrap();
+        name_fighters(&p, &mut l);
+        let _ = fs::remove_dir_all(&p.root);
     }
 
     #[test]

@@ -327,6 +327,18 @@ pub struct Replay {
     pub shares: Vec<ReplayShare>,
     /// the server has a real picture of it (taken by the recorder during the fight)
     pub thumb: bool,
+    /// the fight file's SHA-256 (upper-case hex), as the server keeps it; the recorder's index on this PC goes by it
+    pub sha: Option<String>,
+    /// what each fighter played, as the server worked it out from the skills pressed: a class ("Darkrunner") or the
+    /// trees ("Archery/Vitalism"); empty when the fight shows none
+    pub self_class: String,
+    pub other_class: String,
+    /// the fighters' real names, from the recorder's index on this PC (never from the server, never sent anywhere);
+    /// empty when this PC did not record it
+    #[serde(skip)]
+    pub live_me: String,
+    #[serde(skip)]
+    pub live_other: String,
 }
 
 /// One share of a recording, as the library lists it.

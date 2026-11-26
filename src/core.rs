@@ -27,8 +27,24 @@ fn is_other_drive_client(d: &Path) -> bool {
     d.is_absolute() && s.ends_with(&format!("\\{}\\client", crate::find::OTHER_DRIVE_DIR.to_lowercase())) && !s.contains("\\..\\")
 }
 
-/// Process names that must not be running when our client starts (compared case-insensitively).
-pub const BLOCKING_PROCESSES: [&str; 2] = ["archeage.exe", "archeage classic launcher.exe"];
+/// The game's process name (compared case-insensitively). Only the live game blocks our client: an `archeage.exe`
+/// started from the AA Classic install. AA Classic's own launcher does not (it only patches and starts the game; the
+/// recorder keeps it open), and neither does a client run from our own copy.
+pub const GAME_PROCESS: &str = "archeage.exe";
+
+/// Whether one running process keeps our client from starting: the game run from the AA Classic install (`aac`), or,
+/// with no install known, any game not run from one of `ours`. A game whose folder cannot be read blocks (it may be
+/// the live one).
+pub fn blocks(name: &str, image: Option<&Path>, ours: &[&Path], aac: Option<&Path>) -> bool {
+    if !name.eq_ignore_ascii_case(GAME_PROCESS) {
+        return false;
+    }
+    let Some(image) = image else { return true };
+    if ours.iter().any(|d| is_inside(image, d)) {
+        return false;
+    }
+    aac.is_none_or(|root| is_inside(image, root))
+}
 
 /// Environment variables removed from the client's environment.
 const ENV_REMOVE: [&str; 4] = ["SteamAppId", "SteamGameId", "AAC_PERF_SESSION", "AAC_PERF_SESSION_SAMPLER"];
@@ -528,14 +544,16 @@ pub fn client_env(paths: &Paths) -> (Vec<(String, String)>, Vec<String>) {
     (set, ENV_REMOVE.iter().map(|s| s.to_string()).collect())
 }
 
-/// Starts our client. Refuses when AA Classic or its launcher is running, or the copy is not ready.
+/// What the player is told when the live game blocks our client.
+pub fn blocked_message(running: &[String]) -> String {
+    format!("Close the AA Classic game first ({}). Both games can't run at once; AA Classic's launcher can stay open.", running.join(", "))
+}
+
+/// Starts our client. Refuses when the live AA Classic game is running, or the copy is not ready.
 pub fn play(paths: &Paths, aac: Option<&AacInstall>, mode: Mode, l: &Launch) -> Result<Child, String> {
-    let running = blocking_processes();
+    let running = blocking_processes(paths, aac.map(AacInstall::root));
     if !running.is_empty() {
-        return Err(format!(
-            "Close AA Classic first (its game or launcher is still open: {}). Both can't run at once.",
-            running.join(", ")
-        ));
+        return Err(blocked_message(&running));
     }
     let st = status(paths, aac, mode);
     if st != State::Ready {
@@ -627,11 +645,29 @@ pub fn same_file(a: &Path, b: &Path) -> io::Result<bool> {
     Ok(file_id(a)? == file_id(b)?)
 }
 
-/// Running processes from `BLOCKING_PROCESSES`.
-pub fn blocking_processes() -> Vec<String> {
+/// The full path of a running process's program, or None when Windows does not tell (another user's, or elevated).
+fn image_of(pid: u32) -> Option<PathBuf> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(h);
+        (ok != 0).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
+    }
+}
+
+/// The running games that keep our client from starting (see `blocks`), each as its program's path.
+pub fn blocking_processes(paths: &Paths, aac: Option<&Path>) -> Vec<String> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
     let mut found = Vec::new();
+    let ours = [paths.root.as_path(), paths.client.as_path()];
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snap == INVALID_HANDLE_VALUE {
@@ -643,8 +679,14 @@ pub fn blocking_processes() -> Vec<String> {
         while ok != 0 {
             let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
             let name = String::from_utf16_lossy(&e.szExeFile[..len]);
-            if BLOCKING_PROCESSES.contains(&name.to_lowercase().as_str()) && !found.contains(&name) {
-                found.push(name);
+            if name.eq_ignore_ascii_case(GAME_PROCESS) {
+                let image = image_of(e.th32ProcessID);
+                if blocks(&name, image.as_deref(), &ours, aac) {
+                    let said = image.map_or(format!("{name}, folder unknown"), |p| p.display().to_string());
+                    if !found.contains(&said) {
+                        found.push(said);
+                    }
+                }
             }
             ok = Process32NextW(snap, &mut e);
         }
@@ -667,6 +709,27 @@ fn no_crash_dialogs() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_live_game_blocks_our_client() {
+        use super::blocks;
+        use std::path::Path;
+        let ours = [Path::new(r"C:\Users\p\AppData\Local\AAReplay"), Path::new(r"D:\AAReplay\client")];
+        let aac = Some(Path::new(r"C:\Games\AAClassic"));
+        let live = Path::new(r"C:\Games\AAClassic\binNext\archeage.exe");
+        // AA Classic's own launcher, open beside us (the recorder keeps it open): not a game
+        assert!(!blocks("ArcheAge Classic Launcher.exe", Some(Path::new(r"C:\Games\AAClassic\ArcheAge Classic Launcher.exe")), &ours, aac));
+        // the live game blocks, whatever the case of its name
+        assert!(blocks("ArcheAge.exe", Some(live), &ours, aac));
+        // our own client (in the data folder or a moved copy) and another copy outside the install do not
+        assert!(!blocks("archeage.exe", Some(Path::new(r"C:\Users\p\AppData\Local\AAReplay\client\binNext\archeage.exe")), &ours, aac));
+        assert!(!blocks("archeage.exe", Some(Path::new(r"D:\AAReplay\client\binNext\archeage.exe")), &ours, aac));
+        assert!(!blocks("archeage.exe", Some(Path::new(r"D:\research\aac-client-2\binNext\archeage.exe")), &ours, aac));
+        // a game whose folder Windows hides may be the live one; with no install known, any game not ours blocks
+        assert!(blocks("archeage.exe", None, &ours, aac));
+        assert!(blocks("archeage.exe", Some(Path::new(r"D:\research\aac-client-2\binNext\archeage.exe")), &ours, None));
+        assert!(super::blocked_message(&["C:\\x\\archeage.exe".into()]).contains("launcher can stay open"));
+    }
+
     #[test]
     fn a_new_launcher_points_at_the_hosted_arena() {
         let cfg = super::Config::default();

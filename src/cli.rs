@@ -94,7 +94,7 @@ fn go(args: &[String]) -> Result<(), String> {
             if let Some(s) = install::load_state(&paths) {
                 println!("own download: game data version {}{}", s.pak_version(), if s.finished { "" } else { " (not finished)" });
             }
-            let running = blocking_processes();
+            let running = blocking_processes(&paths, a.as_ref().map(AacInstall::root));
             println!("blocking processes: {}", if running.is_empty() { "none".into() } else { running.join(", ") });
         }
         "setup" => {

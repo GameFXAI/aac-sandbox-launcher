@@ -341,7 +341,7 @@ impl App {
         if let Some(s) = &a.saved {
             a.cfg.username = s.username.clone();
             // the last list at once (the plan too), and a fresh one off the window's thread
-            a.lib.data = library::load_cached(&a.paths, &a.cfg.login_ip, &s.username);
+            a.lib.data = library::load_named(&a.paths, &a.cfg.login_ip, &s.username);
             a.fetch_library();
         }
         a.check_server();

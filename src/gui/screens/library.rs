@@ -107,9 +107,26 @@ pub(in crate::gui) fn display_title(title: &str) -> String {
     }
 }
 
-/// The capture's name as shown: the one the player gave it, else its fight's title.
+/// The capture's name as shown: the one the player gave it, else its fight's title with the one fought by name when
+/// this PC knows it ("Lost to Qfqwf" rather than "Lost to Opponent").
 pub(in crate::gui) fn name_of(r: &Replay) -> String {
-    r.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| display_title(&r.title))
+    r.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(String::from).unwrap_or_else(|| {
+        if r.live_other.is_empty() {
+            display_title(&r.title)
+        } else {
+            display_title(&r.title.replacen("Opponent", &r.live_other, 1))
+        }
+    })
+}
+
+/// The one fought as shown: the real name this PC knows, else the server's ("Opponent"); empty when none.
+pub(in crate::gui) fn other_of(r: &Replay) -> String {
+    if r.live_other.is_empty() { r.other.trim().to_string() } else { r.live_other.clone() }
+}
+
+/// "Qfqwf (Abolisher)": a fighter with what it played, when known.
+fn with_class(name: &str, class: &str) -> String {
+    if class.trim().is_empty() { name.to_string() } else { format!("{name} ({})", class.trim()) }
 }
 
 fn length_of(r: &Replay) -> Option<u32> {
@@ -123,7 +140,11 @@ fn shown(l: &Library, query: &str, visibility: usize, sort: usize) -> Vec<Replay
     let mut v: Vec<Replay> = l
         .replays
         .iter()
-        .filter(|r| q.is_empty() || [&r.title, &r.other, &r.me].iter().any(|t| t.to_lowercase().contains(&q)) || r.name.as_ref().is_some_and(|n| n.to_lowercase().contains(&q)))
+        .filter(|r| {
+            q.is_empty()
+                || [&r.title, &r.other, &r.me, &r.live_me, &r.live_other, &r.self_class, &r.other_class].iter().any(|t| t.to_lowercase().contains(&q))
+                || r.name.as_ref().is_some_and(|n| n.to_lowercase().contains(&q))
+        })
         .filter(|r| match visibility {
             1 => r.shares.is_empty(),
             2 => !r.shares.is_empty(),
@@ -228,10 +249,11 @@ impl App {
     pub(in crate::gui) fn library_came(&mut self, r: Result<Library, String>) {
         self.lib.loading = false;
         match r {
-            Ok(l) => {
+            Ok(mut l) => {
                 if let Some(s) = self.secret().map(|(u, _)| u) {
                     library::save_cached(&self.paths, &self.cfg.login_ip, &s, &l);
                 }
+                library::name_fighters(&self.paths, &mut l);
                 if self.lib.confirm.is_some_and(|n| !l.replays.iter().any(|r| r.n == n)) {
                     self.lib.confirm = None;
                 }
@@ -423,7 +445,13 @@ impl App {
         let tx = rect.left() + 13.0;
         let title = crate::gui::status_bar::fit(&p, &name_of(r), rect.width() - 26.0, bold_font(15.0));
         p.text(pos2(tx, thumb.bottom() + 11.0), Align2::LEFT_TOP, title, bold_font(15.0), if dim { MUTED } else { INK });
-        let day = library::day(r.when, library::now_unix());
+        // the day, then what each side played ("Today  ·  Darkrunner vs Abolisher"), cut to the card
+        let mut day = library::day(r.when, library::now_unix());
+        if !r.self_class.is_empty() || !r.other_class.is_empty() {
+            let side = |c: &str| if c.trim().is_empty() { "?".to_string() } else { c.trim().to_string() };
+            day = format!("{day}  ·  {} vs {}", side(&r.self_class), side(&r.other_class));
+        }
+        let day = crate::gui::status_bar::fit(&p, &day, rect.width() - 26.0 - if length_of(r).is_some() { 58.0 } else { 0.0 }, text_font(13.0));
         p.text(pos2(tx, thumb.bottom() + 34.0), Align2::LEFT_TOP, if dim { "Past your plan's limit".to_string() } else { day }, text_font(13.0), if dim { AMBER } else { MUTED });
         if let Some(s) = length_of(r) {
             p.text(pos2(rect.right() - 13.0, thumb.bottom() + 34.0), Align2::RIGHT_TOP, length_words(s), text_font(13.0), rgba(214, 212, 208, 255));
@@ -462,8 +490,10 @@ impl App {
         let x = thumb.right() + 16.0;
         p.text(pos2(x, rect.top() + 16.0), Align2::LEFT_TOP, name_of(r), bold_font(15.0), if r.over_cap { MUTED } else { INK });
         let mut line = library::day(r.when, library::now_unix());
-        if !r.other.trim().is_empty() {
-            line = format!("{line}  ·  with {}", r.other.trim());
+        let other = other_of(r);
+        if !other.is_empty() {
+            let me = [r.live_me.as_str(), r.me.trim(), "You"].into_iter().find(|n| !n.is_empty()).unwrap_or("You");
+            line = format!("{line}  ·  {}  vs  {}", with_class(me, &r.self_class), with_class(&other, &r.other_class));
         }
         if r.over_cap {
             line = "Past your plan's limit".into();
@@ -506,20 +536,31 @@ impl App {
         let th = tg.size().y;
         p.galley(pos2(x, y), tg, INK);
         y += th + 12.0;
-        let me = if c.me.trim().is_empty() { self.account_name() } else { c.me.trim().to_string() };
+        // each fighter: name, and under it what it played
+        let me = if !c.live_me.is_empty() {
+            c.live_me.clone()
+        } else if c.me.trim().is_empty() {
+            self.account_name()
+        } else {
+            c.me.trim().to_string()
+        };
+        let other = other_of(&c);
         avatar(&p, pos2(x + 13.0, y + 13.0), 13.0, &me);
-        let mr = p.text(pos2(x + 34.0, y + 13.0), Align2::LEFT_CENTER, &me, bold_font(14.5), INK);
-        if !c.other.trim().is_empty() {
-            let vr = p.text(pos2(mr.right() + 10.0, y + 13.0), Align2::LEFT_CENTER, "vs", text_font(13.5), MUTED);
-            avatar(&p, pos2(vr.right() + 20.0, y + 13.0), 13.0, c.other.trim());
-            p.text(pos2(vr.right() + 41.0, y + 13.0), Align2::LEFT_CENTER, c.other.trim(), bold_font(14.5), INK);
+        let mr = p.text(pos2(x + 34.0, y + 6.0), Align2::LEFT_CENTER, &me, bold_font(14.5), INK);
+        let mc = p.text(pos2(x + 34.0, y + 24.0), Align2::LEFT_CENTER, if c.self_class.is_empty() { "class unknown" } else { c.self_class.trim() }, text_font(12.5), MUTED);
+        if !other.is_empty() {
+            let vx = mr.right().max(mc.right()) + 12.0;
+            let vr = p.text(pos2(vx, y + 13.0), Align2::LEFT_CENTER, "vs", text_font(13.5), MUTED);
+            avatar(&p, pos2(vr.right() + 22.0, y + 13.0), 13.0, &other);
+            p.text(pos2(vr.right() + 43.0, y + 6.0), Align2::LEFT_CENTER, &other, bold_font(14.5), INK);
+            p.text(pos2(vr.right() + 43.0, y + 24.0), Align2::LEFT_CENTER, if c.other_class.is_empty() { "class unknown" } else { c.other_class.trim() }, text_font(12.5), MUTED);
         }
-        y += 38.0;
+        y += 44.0;
         let day = library::day(c.when, library::now_unix());
         p.text(pos2(x, y), Align2::LEFT_TOP, format!("Captured {}", if day == "Today" || day == "Yesterday" { day.to_lowercase() } else { format!("on {day}") }), text_font(14.5), rgba(214, 212, 208, 255));
         y += 24.0;
         let mut facts = vec![outcome(&c.title).to_string(), "2 players".to_string()];
-        if c.other.trim().is_empty() {
+        if other.is_empty() {
             facts.pop();
         }
         if let Some(s) = length_of(&c) {
