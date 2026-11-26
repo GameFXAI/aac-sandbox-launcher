@@ -158,18 +158,24 @@ fn local_offset(unix: i64) -> i64 {
     (l as i64 - ticks as i64) / 10_000_000
 }
 
-/// "21 Nov, 18:04" for a recording's start (Unix ms), in the PC's own time; the year only when it is not this one.
-pub fn when(unix_ms: i64, now: i64) -> String {
+/// "Today", "Yesterday", "21 Nov" or "21 Nov 2025" for a recording's start (Unix ms), in the PC's own time.
+pub fn day(unix_ms: i64, now: i64) -> String {
     if unix_ms <= 0 {
-        return "unknown time".into();
+        return "Unknown day".into();
     }
     let t = unix_ms / 1000;
-    let lt = t + local_offset(t);
-    let (y, m, d) = civil_from_days(lt.div_euclid(86400));
-    let secs = lt.rem_euclid(86400);
-    let (ny, _, _) = civil_from_days((now + local_offset(now)).div_euclid(86400));
-    let year = if y == ny { String::new() } else { format!(" {y}") };
-    format!("{d} {}{year}, {:02}:{:02}", MONTHS[(m - 1) as usize], secs / 3600, secs % 3600 / 60)
+    let d = (t + local_offset(t)).div_euclid(86400);
+    let today = (now + local_offset(now)).div_euclid(86400);
+    match today - d {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        _ => {
+            let (y, m, dd) = civil_from_days(d);
+            let (ny, _, _) = civil_from_days(today);
+            let year = if y == ny { String::new() } else { format!(" {y}") };
+            format!("{dd} {}{year}", MONTHS[(m - 1) as usize])
+        }
+    }
 }
 
 #[cfg(test)]
@@ -207,14 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn when_shows_the_day_and_time_and_the_year_only_when_it_differs() {
+    fn days_read_as_people_say_them() {
         let now = parse_iso("2026-11-25T12:00:00Z").unwrap();
-        let t = parse_iso("2026-11-21T12:00:00Z").unwrap();
-        let w = when(t * 1000, now);
-        assert!(w.contains("Nov") && w.contains(':') && !w.contains("2026"), "{w}");
-        let old = parse_iso("2025-06-10T12:00:00Z").unwrap();
-        assert!(when(old * 1000, now).contains("2025"));
-        assert_eq!(when(0, now), "unknown time");
+        assert_eq!(day(now * 1000, now), "Today");
+        assert_eq!(day((now - 86_400) * 1000, now), "Yesterday");
+        let d = day(parse_iso("2026-11-10T12:00:00Z").unwrap() * 1000, now);
+        assert!(d.contains("Nov") && !d.contains("2026"), "{d}");
+        assert!(day(parse_iso("2025-01-21T12:00:00Z").unwrap() * 1000, now).ends_with("2025"));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use crate::core::*;
 use crate::gui::theme::*;
 use crate::gui::widgets::mode_card;
-use crate::gui::{Action, App, Tab};
+use crate::gui::{Action, App, Page};
 use crate::{find, settings, update, vault};
 use eframe::egui::{self, Align, Color32, Layout, Margin, Rect, RichText, Stroke, UiBuilder, vec2};
 
@@ -15,7 +15,7 @@ impl App {
         let locked = self.busy || self.child.is_some();
         ui.scope_builder(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)), |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Settings").font(title_font(28.0)).color(GOLD_HI));
+                ui.label(RichText::new("Settings").font(title_font(28.0)).color(INK));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(RichText::new(format!("Launcher {}", update::VERSION)).size(12.0).color(MUTED));
                 });
@@ -132,7 +132,7 @@ impl App {
                     *act = Some(Action::OpenFolder);
                 }
                 if ui.button("Show log").clicked() {
-                    self.tab = Tab::Log;
+                    self.page = Page::Log;
                 }
                 if ui.button("Copy log").on_hover_text("Copies what the launcher did, to send to whoever helps you. It holds no password.").clicked() {
                     ui.ctx().copy_text(self.log.join("

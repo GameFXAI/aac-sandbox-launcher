@@ -1,28 +1,31 @@
-//! The launcher window: a game-launcher style screen with a backdrop painted in code.
-//! It deliberately uses no AA Classic logo or artwork, so it never passes for the official launcher.
+//! The app window: the AA Replay companion app (docs/companion-app.md), drawn edge to edge in code. It uses no AA
+//! Classic logo or artwork, so it never passes for the official launcher.
 //!
 //! How it fits together:
-//! - `App` (here) holds everything between frames; `Tab` says which screen is up.
-//! - Screens (screens/*.rs) draw into the body and hand back what the player pressed as an `Action`.
-//! - `App::run` (here) carries out an `Action`; work that takes time goes to a thread (tasks.rs, or the screen's
-//!   own file), which answers with an `Event` over the channel.
+//! - `App` (here) holds everything between frames; `Page` says which page is up.
+//! - shell.rs draws the frame every page sits in: title bar, left rail, status bar, the window's edges.
+//! - Pages (screens/*.rs) draw into the centre and the inspector and hand back what the player pressed as an `Action`.
+//! - `App::run` (here) carries out an `Action`; work that takes time goes to a thread (tasks.rs, or the page's own
+//!   file), which answers with an `Event` over the channel.
 //! - `App::poll` (events.rs) takes the `Event`s in at the start of each frame.
-//! - theme.rs is the look (colours, fonts, painting), widgets.rs the launcher's own widgets.
+//! - theme.rs is the look (colours, fonts, painting), icons.rs the line icons, widgets.rs the app's own widgets.
 
 use crate::core::*;
 use crate::net;
 use crate::{find, library, recorder, settings, signin, transfer, update};
 
-mod bottom_bar;
 mod events;
+mod icons;
 mod pictures;
 mod report;
 mod screens;
+mod shell;
+mod status_bar;
 mod tasks;
 mod theme;
 mod widgets;
 
-use eframe::egui::{self, Align, Align2, Layout, Rect, RichText, Sense, Shape, Stroke, UiBuilder, ViewportCommand, pos2, vec2};
+use eframe::egui::{self, Rect, Stroke, pos2, vec2};
 use events::Event;
 use report::ReportForm;
 use screens::library::Lib;
@@ -31,25 +34,103 @@ use std::process::Child;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::SystemTime;
 use theme::*;
-use widgets::{WinBtn, gear_button, nav_tab, win_button};
 
 /// Is there an AA Classic profile on this PC to bring settings from?
 fn transfer_docs_present() -> bool {
     transfer::real_docs().is_some()
 }
 
-/// The screen in the body. Play and Replays are in the top bar; the others are behind the gear (Play returns home).
-#[derive(Clone, Copy, PartialEq)]
-enum Tab {
-    Play,
-    /// the account's recordings (screens/library.rs)
+/// The title bar's sections; each has its own pages in the left rail. Account is the account menu's pages.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(in crate::gui) enum Section {
     Library,
-    Transfer,
+    Community,
+    Guild,
+    Account,
+}
+
+/// The page in the centre.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(in crate::gui) enum Page {
+    /// the account's own recordings (screens/library.rs)
+    Captures,
+    SharedWithMe,
+    Saved,
+    Discover,
+    Following,
+    CommunityShared,
+    GuildHome,
+    GuildShares,
+    Review,
+    Members,
     Settings,
+    Transfer,
     Log,
 }
 
-/// Window -> work: what the player pressed, returned by a screen and carried out by `App::run` once per frame.
+impl Page {
+    pub fn section(self) -> Section {
+        match self {
+            Page::Captures | Page::SharedWithMe | Page::Saved => Section::Library,
+            Page::Discover | Page::Following | Page::CommunityShared => Section::Community,
+            Page::GuildHome | Page::GuildShares | Page::Review | Page::Members => Section::Guild,
+            Page::Settings | Page::Transfer | Page::Log => Section::Account,
+        }
+    }
+
+    /// The rail's pages for a section. Library's last one is a shortcut into Guild.
+    pub fn rail(s: Section) -> &'static [Page] {
+        match s {
+            Section::Library => &[Page::Captures, Page::SharedWithMe, Page::Saved, Page::Review],
+            Section::Community => &[Page::Discover, Page::Following, Page::CommunityShared],
+            Section::Guild => &[Page::GuildHome, Page::GuildShares, Page::Review, Page::Members],
+            Section::Account => &[Page::Settings, Page::Transfer, Page::Log],
+        }
+    }
+
+    /// The page's name in the rail of section `s`.
+    pub fn label(self, s: Section) -> &'static str {
+        match self {
+            Page::Captures => "My captures",
+            Page::SharedWithMe | Page::CommunityShared => "Shared with me",
+            Page::Saved => "Saved",
+            Page::Discover => "Discover",
+            Page::Following => "Following",
+            Page::GuildHome => "Overview",
+            Page::GuildShares => "Guild shares",
+            Page::Review if s == Section::Library => "Guild review",
+            Page::Review => "Review queue",
+            Page::Members => "Members",
+            Page::Settings => "Settings",
+            Page::Transfer => "From AA Classic",
+            Page::Log => "Log",
+        }
+    }
+
+    pub fn icon(self) -> Icon {
+        match self {
+            Page::Captures => Icon::Monitor,
+            Page::SharedWithMe | Page::CommunityShared => Icon::People,
+            Page::Saved => Icon::Star,
+            Page::Discover => Icon::Compass,
+            Page::Following => Icon::Rss,
+            Page::GuildHome => Icon::Home,
+            Page::GuildShares => Icon::Layers,
+            Page::Review => Icon::Shield,
+            Page::Members => Icon::People,
+            Page::Settings => Icon::Gear,
+            Page::Transfer => Icon::Download,
+            Page::Log => Icon::List,
+        }
+    }
+
+    /// The first page of a section (a title-bar tab's click).
+    pub fn home(s: Section) -> Page {
+        Page::rail(s)[0]
+    }
+}
+
+/// Window -> work: what the player pressed, returned by a page and carried out by `App::run` once per frame.
 /// Work that takes time starts a thread there, which answers with an `Event` (events.rs).
 enum Action {
     /// Install game: the launcher's own download
@@ -60,6 +141,8 @@ enum Action {
     UpdateLauncher,
     CopySettings,
     Play,
+    /// the welcome page: sign in to the account (no game is started)
+    SignIn,
     SignUp,
     ChooseFolder,
     SetMode(Mode),
@@ -82,11 +165,11 @@ enum Action {
     RecOff,
     /// the one admin prompt, again after a No (admin.rs)
     RecAdmin,
-    /// the Library: the list again from the server
+    /// My captures: the list again from the server
     RefreshLibrary,
-    /// the Library: delete this recording (its stable number), after the card's "Delete this replay?"
+    /// My captures: delete this recording (its stable number), after the inspector's "Delete this capture?"
     DeleteReplay(i32),
-    /// the Library: start the game and open this recording in its replay player
+    /// My captures: start the game and open this recording in its replay player
     WatchReplay(i32),
     /// the server's upgrade page (the only thing a real checkout will change is where it points)
     Upgrade,
@@ -115,6 +198,8 @@ struct App {
     invite: String,
     /// the sign-in card shows the sign-up form
     signup: bool,
+    /// signed in this run (with the password, not remembered): the shell shows instead of the welcome page
+    signed: bool,
     /// waiting for the account API
     asking: bool,
     log: Vec<String>,
@@ -130,23 +215,22 @@ struct App {
     rx: Receiver<Event>,
     child: Option<(Child, SystemTime)>,
     state: Result<State, String>,
-    tab: Tab,
+    page: Page,
     confirm: Option<(Action, SystemTime)>,
     xfer: Xfer,
-    /// what went wrong with the last thing the player pressed: shown in the bottom bar until the next press
+    /// what went wrong with the last thing the player pressed: shown in the status bar until the next press
     hint: Option<String>,
     /// integrity.rs: this exe is not the build that was installed here (kept for the whole run)
     modified: Option<&'static str>,
     /// the server's answer to /api/info: Ok(name) when it is up
     server_up: Option<Result<String, String>>,
-    /// the sign-in card shows the server address field
     /// keep the sign-in on this PC (the server's token, never the password)
     remember: bool,
     /// the remembered sign-in for this server, if any
     saved: Option<signin::Saved>,
-    /// the invite the installer left (read from the setup file's name): the first PLAY makes the account with it
+    /// the invite the installer left (read from the setup file's name): the first sign-in makes the account with it
     baked_invite: Option<String>,
-    /// the first start's "bring your AA Classic settings" card is up
+    /// the first start's "bring your AA Classic settings" dialog is up
     offer: bool,
     /// the game starts when the transfer that is running ends
     play_after_transfer: bool,
@@ -162,9 +246,9 @@ struct App {
     rec_note: Option<Result<String, String>>,
     rec_sending: bool,
     rec_sent_at: Option<std::time::Instant>,
-    /// the replay Library (screens/library.rs)
+    /// My captures (screens/library.rs)
     lib: Lib,
-    /// the paintings behind the screens and on the cards (pictures.rs)
+    /// the moment pictures (pictures.rs)
     pics: pictures::Pictures,
 }
 
@@ -193,8 +277,9 @@ impl App {
             cfg,
             password: String::new(),
             invite: String::new(),
-            // with the invite from the download and no sign-in yet, the first PLAY makes the account
+            // with the invite from the download and no sign-in yet, the welcome page makes the account
             signup: std::env::var("AAEMU_SANDBOX_SIGNUP").is_ok() || (baked_invite.is_some() && saved.is_none()),
+            signed: false,
             asking: false,
             log: vec![],
             busy: false,
@@ -206,12 +291,16 @@ impl App {
             rx,
             child: None,
             state: Err(String::new()),
-            // start tab, for screenshots: AAEMU_SANDBOX_TAB=settings|log
-            tab: match std::env::var("AAEMU_SANDBOX_TAB").as_deref() {
-                Ok("settings") => Tab::Settings,
-                Ok("log") => Tab::Log,
-                Ok("library") => Tab::Library,
-                _ => Tab::Play,
+            // start page, for screenshots: AAEMU_SANDBOX_TAB=library|shared|saved|community|guild|review|settings|log
+            page: match std::env::var("AAEMU_SANDBOX_TAB").as_deref() {
+                Ok("settings") => Page::Settings,
+                Ok("log") => Page::Log,
+                Ok("shared") => Page::SharedWithMe,
+                Ok("saved") => Page::Saved,
+                Ok("community") => Page::Discover,
+                Ok("guild") => Page::GuildHome,
+                Ok("review") => Page::Review,
+                _ => Page::Captures,
             },
             confirm: None,
             xfer: Xfer::default(),
@@ -236,7 +325,7 @@ impl App {
         };
         if let Some(s) = &a.saved {
             a.cfg.username = s.username.clone();
-            // the last list at once (the plan badge too), and a fresh one off the window's thread
+            // the last list at once (the plan too), and a fresh one off the window's thread
             a.lib.data = library::load_cached(&a.paths, &a.cfg.login_ip, &s.username);
             a.fetch_library();
         }
@@ -275,7 +364,7 @@ impl App {
         self.state = self.aac_if_needed().map(|a| status(&self.paths, a.as_ref(), self.cfg.mode));
     }
 
-    /// A problem with what the player just pressed: logged, and shown in the bottom bar.
+    /// A problem with what the player just pressed: logged, and shown in the status bar.
     fn warn(&mut self, s: impl Into<String>) {
         let s = s.into();
         self.hint = Some(s.clone());
@@ -295,6 +384,16 @@ impl App {
         }
         let u = self.cfg.username.trim();
         (!u.is_empty() && !self.password.is_empty()).then(|| (u.to_string(), Secret::Password(self.password.clone())))
+    }
+
+    /// Signed in: remembered on this PC, or the server took the password this run.
+    pub(in crate::gui) fn signed_in(&self) -> bool {
+        self.saved.is_some() || (self.signed && self.secret().is_some())
+    }
+
+    /// The account's name as the app shows it.
+    pub(in crate::gui) fn account_name(&self) -> String {
+        self.saved.as_ref().map(|s| s.username.clone()).unwrap_or_else(|| self.cfg.username.trim().to_string())
     }
 
     /// Is there an AA Classic profile on this PC to bring settings from? (Only then is the first start's offer made.)
@@ -346,6 +445,7 @@ impl App {
             Action::ImportPack => self.import_pack(),
             Action::ExportPack => self.export_pack(),
             Action::Play => self.press_play(),
+            Action::SignIn => self.sign_in(),
             Action::SignUp => self.start_signup(),
             Action::Report => {
                 self.report = Some(ReportForm { logs: true, ..Default::default() });
@@ -436,105 +536,71 @@ impl App {
             }
         }
     }
-
-    // --- screen parts -------------------------------------------------------------------------------------------
-
-    fn top_bar(&mut self, ui: &mut egui::Ui, rect: Rect, act: &mut Option<Action>) {
-        let p = ui.painter().clone();
-        vgrad(&p, rect, rgba(20, 15, 11, 255), rgba(10, 8, 6, 255));
-        hgrad(&p, Rect::from_min_max(pos2(rect.left(), rect.bottom() - 1.0), pos2(rect.center().x, rect.bottom())), gold_a(10), gold_a(110));
-        hgrad(&p, Rect::from_min_max(pos2(rect.center().x, rect.bottom() - 1.0), rect.right_bottom()), gold_a(110), gold_a(10));
-        let drag = ui.interact(rect, ui.scope_id().with("titlebar"), Sense::click_and_drag());
-        if drag.drag_started_by(egui::PointerButton::Primary) {
-            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
-        }
-
-        // emblem: a gold diamond with a smaller one inside
-        let e = pos2(rect.left() + 34.0, rect.center().y);
-        let dia = |r: f32| vec![e + vec2(0.0, -r), e + vec2(r, 0.0), e + vec2(0.0, r), e + vec2(-r, 0.0)];
-        p.add(Shape::convex_polygon(dia(14.0), gold_a(24), Stroke::new(1.5, GOLD)));
-        p.add(Shape::convex_polygon(dia(6.5), GOLD_DEEP, Stroke::new(1.0, GOLD_HI)));
-        let aa = p.text(pos2(rect.left() + 58.0, rect.center().y), Align2::LEFT_CENTER, "AA", title_font(23.0), INK);
-        let sb = gold_title(&p, pos2(aa.right() + 7.0, rect.center().y), Align2::LEFT_CENTER, "Replay", title_font(23.0));
-
-        let tabs = Rect::from_min_max(pos2(sb.right() + 40.0, rect.top()), rect.max);
-        ui.scope_builder(UiBuilder::new().max_rect(tabs).layout(Layout::left_to_right(Align::Center)), |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            // Play and Replays; everything else is behind the gear, and Play brings you back
-            if nav_tab(ui, "Play", self.tab == Tab::Play).clicked() {
-                self.tab = Tab::Play;
-            }
-            if nav_tab(ui, "Replays", self.tab == Tab::Library).clicked() {
-                self.tab = Tab::Library;
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if win_button(ui, WinBtn::Close).clicked() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                }
-                if win_button(ui, WinBtn::Minimize).clicked() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
-                }
-                let open = !matches!(self.tab, Tab::Play | Tab::Library);
-                if gear_button(ui, open).on_hover_text(if open { "Back to Play" } else { "Settings" }).clicked() {
-                    self.tab = if open { Tab::Play } else { Tab::Settings };
-                }
-                ui.add_space(8.0);
-                if let Some(l) = &self.lib.data {
-                    if plan_badge(ui, l).clicked() {
-                        self.tab = Tab::Library;
-                    }
-                    ui.add_space(8.0);
-                }
-                if ui.add(egui::Button::new(RichText::new("Report a problem").size(14.0).color(INK))).on_hover_text("Tell us what went wrong. The launcher's and the game's logs go with it (no password is in them).").clicked() {
-                    *act = Some(Action::Report);
-                }
-                if let Some(r) = &self.update {
-                    ui.add_space(10.0);
-                    let free = !self.busy && self.child.is_none();
-                    if ui.add_enabled(free, egui::Button::new(RichText::new(format!("Update launcher to {}", r.version)).color(GOLD))).clicked() {
-                        *act = Some(Action::UpdateLauncher);
-                    }
-                }
-            });
-        });
-        let _ = act;
-    }
 }
+
+/// The window's parts, in points.
+pub(in crate::gui) const TITLE_H: f32 = 52.0;
+pub(in crate::gui) const STATUS_H: f32 = 42.0;
+pub(in crate::gui) const RAIL_W: f32 = 226.0;
+pub(in crate::gui) const INSPECTOR_W: f32 = 328.0;
 
 impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.poll(&ctx);
+        // the first seconds: the window settles to its size and scale, so draw it again until it has
+        if ctx.input(|i| i.time) < 3.0 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
+        }
 
         let full = root.max_rect();
         let p = root.painter().clone();
         backdrop(&p, full);
-
-        let top = Rect::from_min_size(full.min, vec2(full.width(), 52.0));
-        let bottom = Rect::from_min_max(pos2(full.left(), full.bottom() - 100.0), full.max);
+        let top = Rect::from_min_size(full.min, vec2(full.width(), TITLE_H));
+        let bottom = Rect::from_min_max(pos2(full.left(), full.bottom() - STATUS_H), full.max);
         let body = Rect::from_min_max(pos2(full.left(), top.bottom()), pos2(full.right(), bottom.top()));
 
-        // the screen's painting under everything in the body
-        let (art, light) = match self.tab {
-            Tab::Play => (&self.pics.hero_play, 1.0),
-            Tab::Library => (&self.pics.hero_replays, 0.62),
-            _ => (&self.pics.hero_more, 0.4),
-        };
-        scene(&p, art, body, light);
-
         let mut act = None;
-        self.top_bar(root, top, &mut act);
-        match self.tab {
-            Tab::Play => self.play_tab(root, body, &mut act),
-            Tab::Library => self.library_tab(root, body, &mut act),
-            Tab::Transfer => self.transfer_tab(root, body, &mut act),
-            Tab::Settings => self.settings_tab(root, body, &mut act),
-            Tab::Log => self.log_tab(root, body),
+        // the account's pages work signed out too (Settings, the transfer, the log); the rest wants a sign-in
+        let shell = self.signed_in() || self.page.section() == Section::Account;
+        self.title_bar(root, top, shell, &mut act);
+        if shell {
+            let rail = Rect::from_min_max(body.min, pos2(body.left() + RAIL_W, body.bottom()));
+            self.rail(root, rail, &mut act);
+            let rest = Rect::from_min_max(pos2(rail.right(), body.top()), body.max);
+            if self.page.section() == Section::Account {
+                let page = rest.shrink2(vec2(8.0, 0.0));
+                match self.page {
+                    Page::Settings => self.settings_tab(root, page, &mut act),
+                    Page::Transfer => self.transfer_tab(root, page, &mut act),
+                    _ => self.log_tab(root, page),
+                }
+            } else {
+                let insp = Rect::from_min_max(pos2(rest.right() - INSPECTOR_W, rest.top()), rest.max);
+                let centre = Rect::from_min_max(rest.min, pos2(insp.left(), rest.bottom()));
+                shell::inspector_panel(&p, insp);
+                match self.page {
+                    Page::Captures => {
+                        self.captures_page(root, centre, &mut act);
+                        self.captures_inspector(root, insp, &mut act);
+                    }
+                    other => {
+                        screens::social::page(root, centre, other);
+                        screens::social::inspector(root, insp, other);
+                    }
+                }
+            }
+        } else {
+            self.welcome(root, body, &mut act);
         }
-        self.bottom_bar(root, bottom, &mut act);
-        // a thin frame around the borderless window
-        p.rect_stroke(full.shrink(0.5), 0.0, Stroke::new(1.0, gold_a(50)), egui::StrokeKind::Inside);
+        self.status_bar(root, bottom, &mut act);
+        if self.offer {
+            self.offer_dialog(&ctx, &mut act);
+        }
         self.report_dialog(&ctx, &mut act);
+        shell::resize_edges(root, full);
+        // a hairline around the borderless window
+        p.rect_stroke(full.shrink(0.5), 0.0, Stroke::new(1.0, rgba(255, 255, 255, 20)), egui::StrokeKind::Inside);
 
         if let Some(a) = act {
             self.run(a);
@@ -542,35 +608,12 @@ impl eframe::App for App {
     }
 }
 
-/// The plan in the top bar, as the server last said it: "FREE", or a star and "REPLAY+" (amber in its last days).
-fn plan_badge(ui: &mut egui::Ui, l: &crate::net::Library) -> egui::Response {
-    let soon = screens::library::ending_soon(l);
-    let (text, col) = match (l.is_sub(), soon) {
-        (true, Some(d)) => (format!("REPLAY+  {d}D"), AMBER),
-        (true, None) => ("REPLAY+".to_string(), GOLD),
-        _ => ("FREE".to_string(), MUTED),
-    };
-    let font = bold_font(11.5);
-    let g = ui.painter().layout_no_wrap(text.clone(), font.clone(), col);
-    let star = if l.is_sub() { 16.0 } else { 0.0 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 22.0 + star, 24.0), Sense::click());
-    let p = ui.painter();
-    let fill = if l.is_sub() { col.gamma_multiply(0.16) } else { rgba(255, 255, 255, 8) };
-    p.rect_filled(rect, 12.0, if resp.hovered() { col.gamma_multiply(0.26) } else { fill });
-    p.rect_stroke(rect, 12.0, Stroke::new(1.0, col.gamma_multiply(0.8)), egui::StrokeKind::Inside);
-    if l.is_sub() {
-        icon(p, pos2(rect.left() + 15.0, rect.center().y), 12.0, Icon::Star, col);
-    }
-    p.text(pos2(rect.left() + 11.0 + star, rect.center().y), Align2::LEFT_CENTER, text, font, col);
-    let (name, line) = screens::library::plan_words(l);
-    resp.on_hover_text(format!("{name}: {line}. Open your replays."))
-}
-
 pub fn run() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1120.0, 680.0])
-            .with_resizable(false)
+            .with_inner_size([1320.0, 820.0])
+            .with_min_inner_size([1100.0, 700.0])
+            .with_resizable(true)
             .with_decorations(false)
             .with_title("AA Replay"),
         ..Default::default()

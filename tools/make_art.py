@@ -1,49 +1,49 @@
-"""Cuts the launcher's pictures (assets/art/*.jpg) from the owner's AA REPLAY paintings.
+"""Cuts the app's moment pictures (assets/art/*.jpg) from the owner's design images.
 
-    python -I tools/make_art.py <kit generated folder>
-    python -I tools/make_art.py D:/research/aaemu35/Art/aa-replay-kit/generated
+    python -I tools/make_art.py <design folder>
+    python -I tools/make_art.py C:/Users/<you>/.codex/visualizations/2026/11/25/<id>/aa-replay-desktop/obsidian-ember-v2
 
-The paintings are the owner's own (made for the AA REPLAY art kit: Art/aa-replay-kit in the server repo); nothing of
-AA Classic's art is used. Each picture is a crop of one painting, scaled to what the window draws (the window is a
-fixed 1120x680, drawn at up to 1.5x), as a JPEG the exe embeds (gui/art.rs). The fades into the window's background
-are painted by the launcher, not baked in, so a picture can sit anywhere.
-
-  hero_play     the battlefield banner          the Play screen behind the pitch
-  hero_replays  the arena duel                  the Replays screen
-  hero_more     the knight at the gate          Settings, the log and the transfer
-  thumb_won / thumb_lost / thumb_fight          a recording's picture on its card, by how the fight ended
-  *_grey                                        the same, without colour: a recording past the plan's cap
+The owner picked the "Obsidian Ember V2" designs (docs/companion-app.md). Their sample stills are the owner's own
+generated art; each is cut from the design image that shows it largest, inside its rounded corners and away from its
+badges. They are stand-ins: a full-size picture of the same name in `assets/art/src/` (any size, 16:9 or wider) is used
+instead when it is there. The app embeds the results (gui/pictures.rs) and picks one per kind of moment.
 """
 import os
 import sys
 
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "art")
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(HERE, "..", "assets", "art")
+OWN = os.path.join(OUT, "src")
 
-# name: (painting, crop box in the 1920x1200 painting, output size)
-PICTURES = {
-    "hero_play": ("loading_battlefield", (0, 40, 1500, 747), (1680, 792)),
-    "hero_replays": ("loading_arena", (420, 250, 1920, 957), (1680, 792)),
-    "hero_more": ("rating_screen_bg", (0, 80, 1500, 787), (1680, 792)),
-    "thumb_won": ("loading_arena", (960, 650, 1600, 1050), (384, 240)),
-    "thumb_lost": ("loading_default", (380, 420, 1500, 1120), (384, 240)),
-    "thumb_fight": ("loading_battlefield", (620, 220, 1300, 645), (384, 240)),
+# name: (design image, crop box)
+STILLS = {
+    "moment_fog": ("community.png", (262, 322, 788, 546)),
+    "moment_duel": ("community.png", (262, 573, 716, 755)),
+    "moment_siege": ("community.png", (740, 573, 1193, 755)),
+    "moment_naval": ("guild.png", (265, 633, 714, 800)),
+    "moment_dawn": ("guild.png", (736, 633, 1185, 800)),
+    "moment_port": ("launch-recovery.png", (254, 431, 557, 620)),
+    "moment_caravan": ("launch-recovery.png", (254, 695, 557, 879)),
+    "moment_harbor": ("launch-recovery.png", (579, 695, 877, 879)),
+    "moment_wall": ("launch-recovery.png", (896, 695, 1195, 879)),
+    "crest": ("guild.png", (276, 82, 366, 188)),
 }
-GREY = ["thumb_won", "thumb_lost", "thumb_fight"]
 
 
-def main(kit):
+def main(designs):
     os.makedirs(OUT, exist_ok=True)
-    for name, (painting, box, size) in PICTURES.items():
-        img = Image.open(os.path.join(kit, painting + ".png")).convert("RGB").crop(box).resize(size, Image.LANCZOS)
-        img.save(os.path.join(OUT, name + ".jpg"), quality=84, optimize=True, progressive=False)
-        if name in GREY:
-            grey = ImageEnhance.Brightness(ImageOps.grayscale(img).convert("RGB")).enhance(0.8)
-            grey.save(os.path.join(OUT, name + "_grey.jpg"), quality=84, optimize=True)
-    for f in sorted(os.listdir(OUT)):
-        print(f, os.path.getsize(os.path.join(OUT, f)))
+    for name, (image, box) in STILLS.items():
+        own = os.path.join(OWN, name + ".png")
+        if os.path.exists(own):
+            img = Image.open(own).convert("RGB")
+            img.thumbnail((960, 540), Image.LANCZOS)
+        else:
+            img = Image.open(os.path.join(designs, image)).convert("RGB").crop(box)
+        img.save(os.path.join(OUT, name + ".jpg"), quality=92, optimize=True)
+        print(name, img.size, os.path.getsize(os.path.join(OUT, name + ".jpg")))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "D:/research/aaemu35/Art/aa-replay-kit/generated")
+    main(sys.argv[1])

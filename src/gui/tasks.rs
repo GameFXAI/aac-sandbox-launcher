@@ -113,7 +113,7 @@ impl App {
             return self.start_signup();
         }
         if self.secret().is_none() {
-            return self.warn("Enter your account name and password on the right.");
+            return self.warn("Sign in first.");
         }
         match &self.state {
             Ok(State::Ready) => self.start_play(),
@@ -137,7 +137,7 @@ impl App {
             Err(e) => return self.warn(e),
         };
         let Some((username, secret)) = self.secret() else {
-            return self.warn("Enter your account name and password on the right.");
+            return self.warn("Sign in first.");
         };
         let server = match Server::parse(&self.cfg.login_ip) {
             Ok(s) => s,
@@ -177,6 +177,33 @@ impl App {
         self.launch(aac, username, token);
     }
 
+    /// The welcome page's Sign in: the account API checks the password (and keeps a sign-in with "keep me signed
+    /// in"); no game is started. A bare server address has no account API: its password is checked when the game
+    /// starts.
+    pub(in crate::gui) fn sign_in(&mut self) {
+        if self.signup {
+            return self.start_signup();
+        }
+        let Some((username, secret)) = self.secret() else {
+            return self.warn("Enter your account name and password.");
+        };
+        let server = match Server::parse(&self.cfg.login_ip) {
+            Ok(s) => s,
+            Err(e) => return self.warn(e),
+        };
+        let _ = self.cfg.save(&self.paths);
+        if let Server::Api { .. } = server {
+            self.asking = true;
+            self.say("Signing in…");
+            let (tx, remember) = (self.tx.clone(), self.remember && self.saved.is_none());
+            std::thread::spawn(move || {
+                let _ = tx.send(Event::SignedIn(net::login(&server, &username, secret.cred(), remember).map(|t| (t.username, t.session))));
+            });
+        } else {
+            self.signed = true;
+        }
+    }
+
     pub(in crate::gui) fn sign_out(&mut self) {
         if let Some(s) = self.saved.take() {
             // ends the token on the server too; the file goes either way
@@ -188,6 +215,7 @@ impl App {
         }
         signin::forget(&self.paths);
         self.password.clear();
+        self.signed = false;
         // the next account must not see this one's replays
         crate::library::forget_cached(&self.paths);
         self.lib = Default::default();
@@ -223,6 +251,7 @@ impl App {
         // a Watch from the Library: the recording for the game's replay player, written after the server's addons
         // went in (they replace its folder); a plain Play leaves none from before
         let watch = self.lib.take_pending();
+        self.lib.launched = watch;
         match crate::library::set_pending_watch(&self.paths, watch) {
             Ok(()) if watch.is_some() => self.say(format!("the game opens replay {} once it is in the world", watch.unwrap())),
             Ok(()) => {}
@@ -237,7 +266,13 @@ impl App {
                 self.say(format!("client started (pid {})", c.id()));
                 self.child = Some((c, SystemTime::now()));
             }
-            Err(e) => self.warn(e),
+            Err(e) => {
+                if let Some(n) = watch {
+                    self.lib.failed = Some((n, e.clone()));
+                    self.lib.launched = None;
+                }
+                self.warn(e)
+            }
         }
     }
 

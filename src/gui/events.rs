@@ -3,7 +3,7 @@
 //! `App::run`, which starts the background work in tasks.rs or a screen's own file.)
 
 use super::screens::transfer::TransferEvent;
-use super::{App, Tab};
+use super::{App, Page};
 use crate::core::*;
 use crate::{net, signin, update};
 use eframe::egui::{self, ViewportCommand};
@@ -18,6 +18,8 @@ pub enum Event {
     /// "Report a problem" was sent (its id) or not
     Reported(Result<String, String>),
     SignedUp(Result<String, String>),
+    /// the account API's answer to a sign-in without a game: account name and (with "keep me signed in") the sign-in
+    SignedIn(Result<(String, Option<String>), String>),
     Progress(f32),
     /// Install game ended: game data version and client build
     Installed(Result<(u32, String), String>),
@@ -46,6 +48,20 @@ pub enum Event {
 }
 
 impl App {
+    /// Keeps the server's sign-in sealed on this PC (with "keep me signed in"); the password is forgotten then.
+    fn keep_sign_in(&mut self, name: &str, session: Option<String>) {
+        let Some(session) = session else { return };
+        let s = signin::Saved { server: self.cfg.login_ip.trim().to_string(), username: name.to_string(), session };
+        match signin::save(&self.paths, &s) {
+            Ok(()) => {
+                self.say(format!("Signed in as {name}: remembered on this PC (the password is not kept)"));
+                self.saved = Some(s);
+                self.password.clear();
+            }
+            Err(e) => self.say(e),
+        }
+    }
+
     pub(in crate::gui) fn poll(&mut self, ctx: &egui::Context) {
         self.poll_recorder(ctx);
         while let Ok(m) = self.rx.try_recv() {
@@ -62,33 +78,49 @@ impl App {
                         (Ok((name, ticket, session)), Ok(aac)) => {
                             self.cfg.username = name.clone();
                             let _ = self.cfg.save(&self.paths);
-                            if let Some(session) = session {
-                                let s = signin::Saved { server: self.cfg.login_ip.trim().to_string(), username: name.clone(), session };
-                                match signin::save(&self.paths, &s) {
-                                    Ok(()) => {
-                                        self.say(format!("Signed in as {name}: remembered on this PC (the password is not kept)"));
-                                        self.saved = Some(s);
-                                        self.password.clear();
-                                    }
-                                    Err(e) => self.say(e),
-                                }
-                            }
+                            self.keep_sign_in(&name, session);
+                            self.signed = true;
                             // the first start: offer AA Classic's settings before the game starts (the ticket is
                             // left to run out; the next press asks for a fresh one)
                             if !self.cfg.transfer_offered && self.offer_ready() && self.secret().is_some() {
                                 self.offer = true;
-                                self.tab = Tab::Play;
                             } else {
                                 self.launch(aac, name, ticket);
                             }
                         }
                         (Err(e), _) | (_, Err(e)) => {
-                            // a Watch from the Library waits for no game now
-                            if self.lib.pending.take().is_some() {
-                                self.lib.note = Some(Err(format!("Sign-in failed: {e}")));
+                            // a Jump into ArcheAge waits for no game now
+                            if let Some((n, _)) = self.lib.pending.take() {
+                                self.lib.failed = Some((n, format!("Sign-in failed: {e}")));
                             }
                             if e == net::explain("BadSession") {
                                 // the remembered sign-in ran out or was ended: the password once more
+                                self.saved = None;
+                                signin::forget(&self.paths);
+                            }
+                            self.warn(format!("Sign-in failed: {e}"))
+                        }
+                    }
+                }
+                Event::SignedIn(r) => {
+                    self.asking = false;
+                    match r {
+                        Ok((name, session)) => {
+                            self.cfg.username = name.clone();
+                            let _ = self.cfg.save(&self.paths);
+                            self.keep_sign_in(&name, session);
+                            self.signed = true;
+                            self.hint = None;
+                            self.say(format!("Signed in as {name}"));
+                            self.lib = Default::default();
+                            self.lib.data = crate::library::load_cached(&self.paths, &self.cfg.login_ip, &name);
+                            self.fetch_library();
+                            if self.page.section() == crate::gui::Section::Account {
+                                self.page = Page::Captures;
+                            }
+                        }
+                        Err(e) => {
+                            if e == net::explain("BadSession") {
                                 self.saved = None;
                                 signin::forget(&self.paths);
                             }
@@ -116,8 +148,8 @@ impl App {
                             self.baked_invite = None;
                             signin::clear_invite(&self.paths);
                             self.say(format!("Account {name} created"));
-                            // one press: the account, then the game
-                            self.press_play();
+                            // one press: the account, then signed in to it
+                            self.sign_in();
                         }
                         // the invite of a second install was used up by the first: the account is there, sign in
                         Err(e) if self.baked_invite.is_some() && (e == net::explain("BadInvite") || e == net::explain("UsernameTaken")) => {
@@ -125,7 +157,7 @@ impl App {
                             signin::clear_invite(&self.paths);
                             self.signup = false;
                             self.say(format!("{e}: signing in to the account instead"));
-                            self.press_play();
+                            self.sign_in();
                         }
                         Err(e) => self.warn(format!("Could not create the account: {e}")),
                     }
@@ -182,7 +214,7 @@ impl App {
                         Ok(n) => {
                             // the Library's list is old now: again at once on its screen, else on the next visit
                             self.lib.fresh = false;
-                            if self.tab == Tab::Library {
+                            if self.page == Page::Captures {
                                 self.fetch_library();
                             }
                             let l = format!("{n} new fight{} sent to your replays: watch {} in Replays.", if n == 1 { "" } else { "s" }, if n == 1 { "it" } else { "them" });

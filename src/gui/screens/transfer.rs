@@ -3,7 +3,7 @@
 
 use crate::gui::events::Event;
 use crate::gui::theme::*;
-use crate::gui::{Action, App, Secret, Tab};
+use crate::gui::{Action, App, Page, Secret};
 use crate::net::{self, Server};
 use crate::{recording, transfer};
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Margin, Painter, Pos2, Rect, RichText, Sense, Stroke, TextEdit, UiBuilder, pos2, vec2};
@@ -113,7 +113,7 @@ fn caption(ui: &mut egui::Ui, text: &str) {
 impl App {
     /// Opens the screen: looks at AA Classic's files and the newest recording, and at the clipboard for a link.
     pub(in crate::gui) fn open_transfer(&mut self) {
-        self.tab = Tab::Transfer;
+        self.page = Page::Transfer;
         if self.xfer.link.trim().is_empty() {
             // only a DaruGear link is taken from the clipboard, never other text
             if let Some(code) = transfer::clipboard_text().filter(|t| t.contains("darugear.com/")).and_then(|t| net::daru_code(&t)) {
@@ -341,7 +341,7 @@ impl App {
         let p = ui.painter().clone();
 
         // header
-        p.text(inner.left_top(), Align2::LEFT_TOP, "Bring your setup from AA Classic", title_font(28.0), GOLD_HI);
+        p.text(inner.left_top(), Align2::LEFT_TOP, "Bring your setup from AA Classic", title_font(28.0), INK);
         p.text(inner.left_top() + vec2(0.0, 34.0), Align2::LEFT_TOP, "Tick what should come over and press Transfer. AA Classic's own files are only read, and Undo puts everything back.", FontId::proportional(13.0), MUTED);
 
         let top = inner.top() + 62.0;

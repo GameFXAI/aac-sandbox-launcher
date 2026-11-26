@@ -1,179 +1,343 @@
-//! The launcher's own widgets: top-bar tabs and buttons, the big play button, captioned fields and cards.
+//! The app's own widgets (Obsidian Ember, docs/companion-app.md): title-bar tabs, rail items, the record button,
+//! buttons, the search box, menus, the grid/list toggle, fields and the install-mode cards.
 
 use super::theme::*;
-use eframe::egui::{self, Align2, Color32, FontId, Margin, Rect, RichText, Sense, Shape, Stroke, TextEdit, Vec2, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, Id, Margin, Rect, Response, RichText, Sense, Stroke, TextEdit, pos2, vec2};
 
-/// A tab in the top bar, as the Arena window's: the name in the title serif, gold with a glowing gold line under it
-/// when picked.
-pub fn nav_tab(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
-    let font = title_font(17.0);
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), INK);
-    let size = vec2(galley.size().x + 40.0, 52.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+/// A hairline a step lighter than LINE, for controls.
+pub const EDGE: Color32 = Color32::from_rgb(52, 52, 60);
+
+/// A tab in the title bar: icon and name; the picked one in warm white with an amber line glowing under it.
+pub fn top_tab(ui: &mut egui::Ui, ic: Icon, label: &str, selected: bool, height: f32) -> Response {
+    let font = medium_font(15.0);
+    let g = ui.painter().layout_no_wrap(label.to_string(), font.clone(), INK);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 64.0, height), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, selected, label));
+    let p = ui.painter();
+    let col = if selected { INK } else if resp.hovered() { rgba(220, 216, 210, 255) } else { MUTED };
+    if selected {
+        let base = rect.bottom() - 3.0;
+        let lit = Rect::from_min_max(pos2(rect.left() + 6.0, rect.top() + 6.0), pos2(rect.right() - 6.0, base));
+        p.rect_filled(lit, egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, rgba(255, 255, 255, 8));
+        vgrad(p, Rect::from_min_max(pos2(lit.left(), base - 16.0), pos2(lit.right(), base)), gold_a(0), gold_a(30));
+        let bar = Rect::from_min_max(pos2(rect.left() + 12.0, base), pos2(rect.right() - 12.0, base + 3.0));
+        for i in 1..=4 {
+            p.rect_filled(bar.expand(i as f32 * 1.5), 3.0, gold_a(16 - i * 3));
+        }
+        p.rect_filled(bar, 1.5, GOLD);
+    }
+    let x = rect.left() + 22.0;
+    icon(p, pos2(x + 8.0, rect.center().y), 17.0, ic, col);
+    p.text(pos2(x + 26.0, rect.center().y), Align2::LEFT_CENTER, label, font, col);
+    resp
+}
+
+/// A page in the left rail: icon and name; the picked one on a bronze fill.
+pub fn rail_item(ui: &mut egui::Ui, ic: Icon, label: &str, selected: bool, width: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 40.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
-    let color = if selected {
-        GOLD_HI
-    } else if resp.hovered() {
-        INK
-    } else {
-        rgba(214, 200, 176, 255)
-    };
     let p = ui.painter();
     if selected {
-        // a glow rising from the line, and the line itself fading out at both ends
-        let base = rect.bottom() - 2.0;
-        vgrad(p, Rect::from_min_max(pos2(rect.left() + 8.0, base - 18.0), pos2(rect.right() - 8.0, base)), gold_a(0), gold_a(34));
-        let mid = rect.center().x;
-        hgrad(p, Rect::from_min_max(pos2(rect.left() + 4.0, base), pos2(mid, base + 2.0)), gold_a(0), GOLD);
-        hgrad(p, Rect::from_min_max(pos2(mid, base), pos2(rect.right() - 4.0, base + 2.0)), GOLD, gold_a(0));
+        bronze(p, rect, 8.0, 1.2);
+        p.rect_stroke(rect, 8.0, Stroke::new(1.0, gold_a(46)), egui::StrokeKind::Inside);
+    } else if resp.hovered() {
+        p.rect_filled(rect, 8.0, rgba(255, 255, 255, 8));
     }
-    p.text(rect.center() + vec2(0.0, 1.0), Align2::CENTER_CENTER, label, font, color);
+    let col = if selected { INK } else if resp.hovered() { INK } else { rgba(206, 204, 200, 255) };
+    icon(p, pos2(rect.left() + 22.0, rect.center().y), 17.0, ic, if selected { GOLD_HI } else { col });
+    p.text(pos2(rect.left() + 44.0, rect.center().y), Align2::LEFT_CENTER, label, if selected { bold_font(14.5) } else { medium_font(14.5) }, col);
     resp
 }
 
-/// The game's gold button (Apply, Enter the ring): a gold bar with dark serif words. `width` 0 fits the words.
-pub fn gold_button(ui: &mut egui::Ui, label: &str, width: f32, height: f32, enabled: bool) -> egui::Response {
-    let font = title_font((height * 0.5).clamp(13.0, 22.0));
-    let g = ui.painter().layout_no_wrap(label.to_string(), font.clone(), DARK_TEXT);
-    let w = if width > 0.0 { width } else { g.size().x + height * 1.3 };
+/// The record button at the top of the rail: a red dot (lit while recording), "Record", and its state in a chip.
+pub fn record_button(ui: &mut egui::Ui, width: f32, live: bool, chip: &str, chip_col: Color32, open: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 46.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Record"));
+    let p = ui.painter();
+    let hov = resp.hovered() || open;
+    p.rect_filled(rect, 10.0, if hov { Color32::from_rgb(30, 30, 35) } else { RAISED });
+    p.rect_stroke(rect, 10.0, Stroke::new(1.0, if open { gold_a(120) } else { EDGE }), egui::StrokeKind::Inside);
+    let dot = pos2(rect.left() + 24.0, rect.center().y);
+    if live {
+        let t = ui.input(|i| i.time) as f32;
+        let a = ((t * 3.0).sin() * 0.5 + 0.5) * 60.0;
+        p.circle_filled(dot, 10.0, rgba(232, 84, 84, a as u8));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+    }
+    p.circle_filled(dot, 7.0, if live { Color32::from_rgb(240, 82, 82) } else { Color32::from_rgb(214, 86, 86) });
+    p.text(pos2(rect.left() + 44.0, rect.center().y), Align2::LEFT_CENTER, "Record", bold_font(15.0), INK);
+    let g = p.layout_no_wrap(chip.to_string(), medium_font(12.0), chip_col);
+    let c = Rect::from_min_size(pos2(rect.right() - 14.0 - g.size().x - 16.0, rect.center().y - 12.0), vec2(g.size().x + 16.0, 24.0));
+    p.rect_filled(c, 6.0, rgba(255, 255, 255, 8));
+    p.rect_stroke(c, 6.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+    p.galley(c.center() - g.size() / 2.0, g, chip_col);
+    resp
+}
+
+fn button_body(ui: &mut egui::Ui, label: &str, ic: Option<Icon>, external: bool, width: f32, height: f32, enabled: bool) -> (Rect, Response, f32) {
+    let font = medium_font((height * 0.38).clamp(13.0, 16.5));
+    let g = ui.painter().layout_no_wrap(label.to_string(), font, INK);
+    let extra = if ic.is_some() { 26.0 } else { 0.0 } + if external { 22.0 } else { 0.0 };
+    let w = if width > 0.0 { width } else { g.size().x + extra + height * 0.9 };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, height), if enabled { Sense::click() } else { Sense::hover() });
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    (rect, resp, g.size().x + extra)
+}
+
+fn button_text(p: &egui::Painter, rect: Rect, label: &str, ic: Option<Icon>, external: bool, content_w: f32, col: Color32) {
+    let font = medium_font((rect.height() * 0.38).clamp(13.0, 16.5));
+    let mut x = rect.center().x - content_w / 2.0;
+    let y = rect.center().y;
+    if let Some(i) = ic {
+        icon(p, pos2(x + 9.0, y), 18.0, i, col);
+        x += 26.0;
+    }
+    let r = p.text(pos2(x, y), Align2::LEFT_CENTER, label, font, col);
+    if external {
+        icon(p, pos2(r.right() + 13.0, y), 14.0, Icon::External, col);
+    }
+}
+
+/// The primary action: bronze, with an amber rim and a soft glow (Share clip, Play, Sign in). `width` 0 fits.
+pub fn primary_button(ui: &mut egui::Ui, label: &str, ic: Option<Icon>, external: bool, width: f32, height: f32, enabled: bool) -> Response {
+    let (rect, resp, cw) = button_body(ui, label, ic, external, width, height, enabled);
     let p = ui.painter();
     let (hov, down) = (enabled && resp.hovered(), enabled && resp.is_pointer_button_down_on());
-    let (top, bottom, text) = if !enabled {
-        (rgba(96, 86, 72, 255), rgba(66, 58, 48, 255), rgba(40, 34, 28, 255))
-    } else if down {
-        (rgba(222, 172, 96, 255), rgba(196, 142, 64, 255), DARK_TEXT)
-    } else if hov {
-        (rgba(255, 238, 186, 255), rgba(232, 178, 96, 255), DARK_TEXT)
-    } else {
-        (rgba(250, 224, 158, 255), rgba(214, 156, 76, 255), DARK_TEXT)
-    };
-    grad_shape(p, rect, 3.0, top, bottom, Stroke::new(1.0, rgba(110, 72, 28, 255)));
-    if enabled {
-        p.line_segment([pos2(rect.left() + 3.0, rect.top() + 1.5), pos2(rect.right() - 3.0, rect.top() + 1.5)], Stroke::new(1.0, rgba(255, 248, 220, 170)));
+    if !enabled {
+        p.rect_filled(rect, 9.0, rgba(255, 255, 255, 6));
+        p.rect_stroke(rect, 9.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+        button_text(p, rect, label, ic, external, cw, FAINT);
+        return resp;
     }
-    p.text(rect.center() + vec2(0.0, if down { 1.5 } else { 0.5 }), Align2::CENTER_CENTER, label, font, text);
+    glow(p, rect, 9.0, if hov { 1.2 } else { 0.7 });
+    vgrad_round(p, rect, 9.0, if hov { rgba(150, 92, 40, 255) } else { rgba(128, 78, 34, 255) }, if down { rgba(92, 54, 22, 255) } else { rgba(84, 50, 22, 255) });
+    p.rect_stroke(rect, 9.0, Stroke::new(1.5, if hov { GOLD_HI } else { GOLD }), egui::StrokeKind::Inside);
+    p.line_segment([pos2(rect.left() + 9.0, rect.top() + 2.0), pos2(rect.right() - 9.0, rect.top() + 2.0)], Stroke::new(1.0, rgba(255, 214, 160, 60)));
+    button_text(p, rect, label, ic, external, cw, rgba(255, 244, 228, 255));
     resp
 }
 
-/// The game's dark button (Share, Follow): smoked glass with a faint gold edge that lights on hover. `danger` lights
-/// it red.
-pub fn ghost_button(ui: &mut egui::Ui, label: &str, width: f32, height: f32, danger: bool) -> egui::Response {
-    let font = title_font((height * 0.48).clamp(13.0, 20.0));
-    let g = ui.painter().layout_no_wrap(label.to_string(), font.clone(), INK);
-    let w = if width > 0.0 { width } else { g.size().x + height * 1.2 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+/// A rounded rectangle filled top to bottom (a mesh clipped to the corners, cheaply: the middle band plus two caps).
+fn vgrad_round(p: &egui::Painter, r: Rect, radius: f32, top: Color32, bottom: Color32) {
+    p.rect_filled(Rect::from_min_max(r.min, pos2(r.right(), r.top() + radius * 2.0)), radius, top);
+    p.rect_filled(Rect::from_min_max(pos2(r.left(), r.bottom() - radius * 2.0), r.max), radius, bottom);
+    let mid = Rect::from_min_max(pos2(r.left(), r.top() + radius), pos2(r.right(), r.bottom() - radius));
+    vgrad(p, mid, top, bottom);
+}
+
+/// The second action: graphite with a hairline that lights amber on hover (Jump into ArcheAge, Cancel). `danger`
+/// lights it terracotta.
+pub fn outline_button(ui: &mut egui::Ui, label: &str, ic: Option<Icon>, external: bool, width: f32, height: f32, danger: bool) -> Response {
+    let (rect, resp, cw) = button_body(ui, label, ic, external, width, height, true);
     let p = ui.painter();
     let hov = resp.hovered();
     let lit = if danger { RED } else { GOLD };
-    p.rect_filled(rect, 3.0, if hov { rgba(lit.r(), lit.g(), lit.b(), 26) } else { rgba(0, 0, 0, 150) });
-    p.rect_stroke(rect, 3.0, Stroke::new(1.0, if hov { lit } else { gold_a(64) }), egui::StrokeKind::Inside);
-    p.text(rect.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, label, font, if hov { if danger { RED } else { GOLD_HI } } else { INK });
+    p.rect_filled(rect, 9.0, if hov { rgba(lit.r(), lit.g(), lit.b(), 18) } else { rgba(255, 255, 255, 5) });
+    p.rect_stroke(rect, 9.0, Stroke::new(1.0, if hov { lit } else { Color32::from_rgb(70, 70, 80) }), egui::StrokeKind::Inside);
+    button_text(p, rect, label, ic, external, cw, if hov && danger { RED } else { INK });
     resp
 }
 
-#[derive(Clone, Copy)]
-pub enum WinBtn {
-    Close,
-    Minimize,
+/// A quiet action with an icon (Rename, Delete): words only, lit on hover.
+pub fn link_button(ui: &mut egui::Ui, ic: Icon, label: &str, danger: bool) -> Response {
+    let font = medium_font(14.0);
+    let g = ui.painter().layout_no_wrap(label.to_string(), font.clone(), INK);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 40.0, 32.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    let p = ui.painter();
+    let col = if resp.hovered() { if danger { RED } else { GOLD_HI } } else { rgba(214, 212, 208, 255) };
+    icon(p, pos2(rect.left() + 12.0, rect.center().y), 16.0, ic, col);
+    p.text(pos2(rect.left() + 32.0, rect.center().y), Align2::LEFT_CENTER, label, font, col);
+    resp
 }
 
-pub fn win_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(44.0, 52.0), Sense::click());
+/// The search box: a magnifier and a frameless text field in one rounded box.
+pub fn search_box(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32, height: f32) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let id = ui.next_auto_id();
+    let focused = ui.memory(|m| m.has_focus(id));
+    let p = ui.painter().clone();
+    p.rect_filled(rect, 9.0, Color32::from_rgb(17, 17, 20));
+    p.rect_stroke(rect, 9.0, Stroke::new(1.0, if focused { gold_a(150) } else { EDGE }), egui::StrokeKind::Inside);
+    icon(&p, pos2(rect.left() + 22.0, rect.center().y), 17.0, Icon::Search, MUTED);
+    let field = Rect::from_min_max(pos2(rect.left() + 42.0, rect.top()), pos2(rect.right() - 10.0, rect.bottom()));
+    let r = ui.put(
+        field,
+        TextEdit::singleline(value)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .hint_text(RichText::new(hint).color(FAINT))
+            .font(text_font(14.5))
+            .text_color(INK)
+            .align(Align2::LEFT_CENTER)
+            .desired_width(field.width()),
+    );
+    r
+}
+
+/// Opens or closes the menu `id` when `anchor` is clicked and draws it under the anchor while it is open (closing on
+/// a click anywhere else). `right` lines it up with the anchor's right edge.
+pub fn popover<R>(ui: &egui::Ui, id: Id, anchor: &Response, width: f32, right: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
+    let ctx = ui.ctx().clone();
+    let mut open = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    if anchor.clicked() {
+        open = !open;
+    }
+    if !open {
+        ctx.data_mut(|d| d.insert_temp(id, false));
+        return None;
+    }
+    let x = if right { anchor.rect.right() - width } else { anchor.rect.left() };
+    let shown = egui::Area::new(id.with("menu")).order(egui::Order::Foreground).fixed_pos(pos2(x, anchor.rect.bottom() + 6.0)).show(&ctx, |ui| {
+        egui::Frame::new()
+            .fill(Color32::from_rgb(24, 24, 28))
+            .stroke(Stroke::new(1.0, EDGE))
+            .corner_radius(10)
+            .inner_margin(Margin::same(6))
+            .shadow(egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: rgba(0, 0, 0, 160) })
+            .show(ui, |ui| {
+                ui.set_width(width - 12.0);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                add(ui)
+            })
+            .inner
+    });
+    if !anchor.clicked() && ctx.input(|i| i.pointer.any_click()) {
+        let inside = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| shown.response.rect.contains(p));
+        if !inside {
+            open = false;
+        }
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        open = false;
+    }
+    let still = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(true));
+    ctx.data_mut(|d| d.insert_temp(id, open && still));
+    Some(shown.inner)
+}
+
+/// Closes a popover from inside it (an item was chosen).
+pub fn close_popover(ui: &egui::Ui, id: Id) {
+    ui.ctx().data_mut(|d| d.insert_temp(id, false));
+}
+
+/// A line in a menu: an icon, the words, and a check when it is the picked one.
+pub fn menu_item(ui: &mut egui::Ui, ic: Option<Icon>, label: &str, picked: bool, danger: bool) -> Response {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 34.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::MenuItem, true, picked, label));
+    let p = ui.painter();
+    if resp.hovered() {
+        p.rect_filled(rect, 7.0, if danger { rgba(224, 118, 90, 22) } else { rgba(255, 255, 255, 10) });
+    }
+    let col = if danger && resp.hovered() { RED } else if picked { GOLD_HI } else { INK };
+    let mut x = rect.left() + 10.0;
+    if let Some(i) = ic {
+        icon(p, pos2(x + 8.0, rect.center().y), 16.0, i, if danger { RED } else if picked { GOLD } else { MUTED });
+        x += 26.0;
+    }
+    p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, label, medium_font(14.0), col);
+    if picked {
+        icon(p, pos2(rect.right() - 16.0, rect.center().y), 14.0, Icon::Check, GOLD);
+    }
+    resp
+}
+
+/// A picker in the toolbar (All visibility, Newest first): the picked option, a chevron, and the options in a menu.
+/// Returns true when the pick changed.
+pub fn dropdown(ui: &mut egui::Ui, id: &str, ic: Icon, options: &[&str], picked: &mut usize, width: f32, height: f32, framed: bool) -> bool {
+    let label = options.get(*picked).copied().unwrap_or("");
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, label));
+    let pid = ui.make_persistent_id(id);
+    let open = ui.ctx().data(|d| d.get_temp::<bool>(pid).unwrap_or(false));
+    let p = ui.painter();
+    let hov = resp.hovered() || open;
+    if framed {
+        p.rect_filled(rect, 9.0, if hov { Color32::from_rgb(28, 28, 33) } else { Color32::from_rgb(20, 20, 24) });
+        p.rect_stroke(rect, 9.0, Stroke::new(1.0, if open { gold_a(140) } else { EDGE }), egui::StrokeKind::Inside);
+    } else if hov {
+        p.rect_filled(rect, 9.0, rgba(255, 255, 255, 8));
+    }
+    icon(p, pos2(rect.left() + 20.0, rect.center().y), 16.0, ic, INK);
+    p.text(pos2(rect.left() + 38.0, rect.center().y), Align2::LEFT_CENTER, label, medium_font(14.5), INK);
+    icon(p, pos2(rect.right() - 18.0, rect.center().y), 13.0, Icon::ChevronDown, MUTED);
+    let mut changed = false;
+    popover(ui, pid, &resp, width.max(200.0), true, |ui| {
+        for (i, o) in options.iter().enumerate() {
+            if menu_item(ui, None, o, i == *picked, false).clicked() {
+                changed = i != *picked;
+                *picked = i;
+                close_popover(ui, pid);
+            }
+        }
+    });
+    changed
+}
+
+/// The grid / list toggle: two icon halves in one box, the picked half on bronze.
+pub fn view_toggle(ui: &mut egui::Ui, list: &mut bool, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(height * 2.0 + 8.0, height), Sense::hover());
+    let p = ui.painter().clone();
+    p.rect_filled(rect, 9.0, Color32::from_rgb(20, 20, 24));
+    p.rect_stroke(rect, 9.0, Stroke::new(1.0, EDGE), egui::StrokeKind::Inside);
+    for (i, (ic, is_list, tip)) in [(Icon::Grid, false, "Grid"), (Icon::List, true, "List")].into_iter().enumerate() {
+        let half = Rect::from_min_size(pos2(rect.left() + 4.0 + i as f32 * height, rect.top() + 4.0), vec2(height, height - 8.0));
+        let resp = ui.interact(half, ui.scope_id().with(("view", i)), Sense::click()).on_hover_text(tip);
+        let on = *list == is_list;
+        if on {
+            bronze(&p, half, 7.0, 1.4);
+            p.rect_stroke(half, 7.0, Stroke::new(1.0, gold_a(110)), egui::StrokeKind::Inside);
+        } else if resp.hovered() {
+            p.rect_filled(half, 7.0, rgba(255, 255, 255, 8));
+        }
+        icon(&p, half.center(), 17.0, ic, if on { GOLD_HI } else { MUTED });
+        if resp.clicked() {
+            *list = is_list;
+        }
+    }
+}
+
+/// A window button in the title bar (minimise, maximise or restore, close).
+pub fn win_button(ui: &mut egui::Ui, kind: Icon, height: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(46.0, height), Sense::click());
     let name = match kind {
-        WinBtn::Close => "Close",
-        WinBtn::Minimize => "Minimize",
+        Icon::Close => "Close",
+        Icon::Minimize => "Minimize",
+        Icon::Restore => "Restore",
+        _ => "Maximize",
     };
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
     let p = ui.painter();
     if resp.hovered() {
-        let bg = match kind {
-            WinBtn::Close => rgba(196, 52, 44, 220),
-            WinBtn::Minimize => rgba(255, 255, 255, 22),
-        };
-        p.rect_filled(rect, 0.0, bg);
+        p.rect_filled(rect, 0.0, if kind == Icon::Close { rgba(196, 52, 44, 230) } else { rgba(255, 255, 255, 14) });
     }
-    let c = rect.center();
-    let s = Stroke::new(1.3, if resp.hovered() { INK } else { MUTED });
-    match kind {
-        WinBtn::Close => {
-            p.line_segment([c + vec2(-5.0, -5.0), c + vec2(5.0, 5.0)], s);
-            p.line_segment([c + vec2(5.0, -5.0), c + vec2(-5.0, 5.0)], s);
-        }
-        WinBtn::Minimize => {
-            p.line_segment([c + vec2(-6.0, 0.0), c + vec2(6.0, 0.0)], s);
-        }
-    }
+    icon(p, rect.center(), 15.0, kind, if resp.hovered() { INK } else { rgba(200, 200, 206, 255) });
     resp
 }
 
-/// The gear in the top bar: Settings and everything that is not Play.
-pub fn gear_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(46.0, 52.0), Sense::click());
-    let p = ui.painter();
-    if resp.hovered() {
-        p.rect_filled(rect, 0.0, rgba(255, 255, 255, 18));
-    }
-    let c = rect.center();
-    let col = if open { GOLD } else if resp.hovered() { INK } else { MUTED };
-    let teeth = 8;
-    let mut pts = Vec::new();
-    for i in 0..teeth * 4 {
-        let a = i as f32 / (teeth * 4) as f32 * std::f32::consts::TAU;
-        let r = if (i / 2) % 2 == 0 { 10.5 } else { 8.0 };
-        pts.push(c + vec2(a.cos() * r, a.sin() * r));
-    }
-    p.add(Shape::closed_line(pts, Stroke::new(1.6, col)));
-    p.circle_stroke(c, 3.6, Stroke::new(1.6, col));
-    if open {
-        p.line_segment([pos2(rect.left() + 10.0, rect.bottom() - 2.0), pos2(rect.right() - 10.0, rect.bottom() - 2.0)], Stroke::new(2.0, GOLD));
-    }
-    resp
-}
-
-/// The big gold button in the bottom bar (play / install / update).
-pub fn big_button(ui: &mut egui::Ui, size: Vec2, label: &str, enabled: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
-    let p = ui.painter();
-    let hov = enabled && resp.hovered();
-    if enabled {
-        // a warm glow around it
-        for i in 1..=7 {
-            let g = rect.expand(i as f32 * 2.2);
-            p.rect_filled(g, 4.0 + i as f32 * 2.0, rgba(240, 170, 70, if hov { 13 } else { 7 }));
-        }
-    }
-    let (top, bottom, edge, text) = if !enabled {
-        (Color32::from_rgb(82, 74, 62), Color32::from_rgb(54, 48, 40), Color32::from_rgb(100, 90, 74), MUTED)
-    } else if hov {
-        (Color32::from_rgb(255, 238, 186), Color32::from_rgb(232, 176, 92), Color32::from_rgb(255, 240, 200), DARK_TEXT)
-    } else {
-        (Color32::from_rgb(250, 224, 158), Color32::from_rgb(210, 150, 70), Color32::from_rgb(255, 232, 180), DARK_TEXT)
-    };
-    let r = if enabled && resp.is_pointer_button_down_on() { rect.shrink(1.0) } else { rect };
-    grad_shape(p, r, 4.0, top, bottom, Stroke::new(1.0, rgba(110, 72, 28, 255)));
-    let inner = r.shrink(3.5);
-    p.add(Shape::closed_line(chamfer(inner, 2.5), Stroke::new(1.0, rgba(edge.r(), edge.g(), edge.b(), if enabled { 120 } else { 30 }))));
-    p.text(r.center() + vec2(0.0, 1.0), Align2::CENTER_CENTER, sentence(label), title_font(28.0), text);
-    resp
+/// A small dark square badge on a thumbnail's corner (lock: private, share: shared).
+pub fn thumb_badge(p: &egui::Painter, at: egui::Pos2, ic: Icon) {
+    let r = Rect::from_min_size(at, vec2(28.0, 28.0));
+    p.rect_filled(r, 7.0, rgba(10, 10, 12, 190));
+    p.rect_stroke(r, 7.0, Stroke::new(1.0, rgba(255, 255, 255, 40)), egui::StrokeKind::Inside);
+    icon(p, r.center(), 15.0, ic, INK);
 }
 
 /// Text field with a small caption above it.
-pub fn field(ui: &mut egui::Ui, caption: &str, value: &mut String, password: bool, hint: &str) -> egui::Response {
-    let label = ui.label(RichText::new(caption.to_uppercase()).size(11.5).color(MUTED).extra_letter_spacing(1.2));
-    let r = ui.add(
-        TextEdit::singleline(value)
-            .password(password)
-            .hint_text(hint)
-            .desired_width(f32::INFINITY)
-            .margin(Margin::symmetric(10, 8))
-            .font(FontId::proportional(15.5)),
-    )
-    .labelled_by(label.id);
-    ui.add_space(4.0);
+pub fn field(ui: &mut egui::Ui, caption: &str, value: &mut String, password: bool, hint: &str) -> Response {
+    let label = ui.label(RichText::new(caption).font(medium_font(13.0)).color(MUTED));
+    let r = ui
+        .add(
+            TextEdit::singleline(value)
+                .password(password)
+                .hint_text(RichText::new(hint).color(FAINT))
+                .desired_width(f32::INFINITY)
+                .margin(Margin::symmetric(12, 10))
+                .font(text_font(15.0)),
+        )
+        .labelled_by(label.id);
+    ui.add_space(6.0);
     r
 }
 
@@ -182,29 +346,26 @@ pub fn mode_card(ui: &mut egui::Ui, width: f32, selected: bool, enabled: bool, t
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 104.0), if enabled { Sense::click() } else { Sense::hover() });
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, enabled, selected, title));
     let p = ui.painter();
-    let edge = if selected {
-        Stroke::new(1.5, GOLD)
-    } else if resp.hovered() && enabled {
-        Stroke::new(1.0, gold_a(140))
+    if selected {
+        bronze(p, rect, 10.0, 1.0);
+        picked_rim(p, rect, 10.0);
     } else {
-        Stroke::new(1.0, gold_a(40))
-    };
-    let (t, b) = if selected { (rgba(58, 42, 22, 235), rgba(28, 20, 12, 240)) } else { (rgba(24, 19, 14, 225), rgba(14, 11, 8, 232)) };
-    grad_shape(p, rect, 8.0, t, b, edge);
-    // radio dot
-    let dot = rect.left_top() + vec2(22.0, 26.0);
+        p.rect_filled(rect, 10.0, RAISED);
+        p.rect_stroke(rect, 10.0, Stroke::new(1.0, if resp.hovered() && enabled { Color32::from_rgb(80, 80, 90) } else { EDGE }), egui::StrokeKind::Inside);
+    }
+    let dot = rect.left_top() + vec2(22.0, 25.0);
     p.circle_stroke(dot, 7.0, Stroke::new(1.3, if selected { GOLD } else { MUTED }));
     if selected {
         p.circle_filled(dot, 3.5, GOLD);
     }
-    p.text(rect.left_top() + vec2(40.0, 14.0), Align2::LEFT_TOP, title, title_font(16.5), if selected { GOLD_HI } else { INK });
-    p.text(rect.right_top() + vec2(-16.0, 18.0), Align2::RIGHT_TOP, size, bold_font(13.0), if selected { GOLD } else { MUTED });
-    let g = p.layout(detail.to_string(), FontId::proportional(13.0), MUTED, width - 56.0);
+    p.text(rect.left_top() + vec2(40.0, 15.0), Align2::LEFT_TOP, title, bold_font(15.0), INK);
+    p.text(rect.right_top() + vec2(-16.0, 17.0), Align2::RIGHT_TOP, size, medium_font(12.5), if selected { GOLD } else { MUTED });
+    let g = p.layout(detail.to_string(), text_font(12.5), MUTED, width - 56.0);
     p.galley(rect.left_top() + vec2(40.0, 44.0), g, MUTED);
     enabled && resp.clicked()
 }
 
-/// "INSTALL GAME" -> "Install game": the game's buttons speak in sentences, not capitals.
+/// "INSTALL GAME" -> "Install game": buttons speak in sentences, not capitals.
 pub fn sentence(label: &str) -> String {
     let low = label.to_lowercase();
     let mut c = low.chars();
@@ -212,4 +373,18 @@ pub fn sentence(label: &str) -> String {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
         None => String::new(),
     }
+}
+
+/// A big round icon, a title and a line under it: what a page with nothing to show says.
+pub fn empty_state(ui: &mut egui::Ui, area: Rect, ic: Icon, title: &str, sub: &str) {
+    let c = pos2(area.center().x, area.top() + area.height() * 0.36);
+    let p = ui.painter();
+    p.circle_filled(c, 38.0, gold_a(14));
+    p.circle_stroke(c, 38.0, Stroke::new(1.0, gold_a(60)));
+    icon(p, c, 34.0, ic, GOLD);
+    p.text(c + vec2(0.0, 62.0), Align2::CENTER_TOP, title, bold_font(19.0), INK);
+    let mut job = egui::text::LayoutJob::simple(sub.to_string(), text_font(13.5), MUTED, (area.width() - 80.0).min(460.0));
+    job.halign = egui::Align::Center;
+    let g = p.fonts_mut(|f| f.layout_job(job));
+    p.galley(pos2(c.x, c.y + 92.0), g, MUTED);
 }
