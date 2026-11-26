@@ -102,4 +102,6 @@ the account menu, the first-start offer as a dialog, and Settings / From AA Clas
 Shared with me, Saved, Community and Guild say plainly that they are empty until steps 2-4 give them the server's
 shares, friends and guild. Share clip and Rename appear only once the server has them.
 
+Step 2 is built on the server (aaemu35 08c8c8948, AccountApi.Shares.cs): rename, share and unshare, the feed (community, following, withme, guild, mine, saved), a share with its replies, replies, saves, follows, the watch grant (LG 0x007 to the game server), /api/social (friends and guild by character names, online from the game's character_presence) and guild review with notes and marks. /api/info says shares = true; the replay list carries each recording's name and shares. Visibility is decided from the game database on every request. Next: step 3, the game side of the watch grant.
+
 What the app never shows: invented numbers. A page with nothing yet says so plainly ("No community posts yet").
