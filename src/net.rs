@@ -140,6 +140,7 @@ pub fn explain(code: &str) -> String {
         "ReportsFull" => "the server takes no more reports right now".into(),
         "BadReplay" => "the server could not read that recording as a fight".into(),
         "NoSuchReplay" => "that replay is not on the server any more".into(),
+        "NoSuchShare" => "that share is gone, or no longer shared with you".into(),
         "" => "the server refused the request".into(),
         other => format!("the server refused the request ({other})"),
     }
@@ -332,6 +333,30 @@ pub fn delete_replay(server: &Server, username: &str, cred: Cred, n: i32) -> Res
         e => failed(e),
     })?;
     Ok(())
+}
+
+/// Watch a recording another player shared (POST /api/shares/watch): the server checks this account may see it and
+/// lets the game server play it for this account once. The game's replay player then starts it by itself, in a game
+/// already open or once the game is in the world; the answer is how many seconds the grant lasts. Nothing is written
+/// for the game: the grant is the server's, bound to this account.
+#[allow(dead_code)] // the Shared with me, Community and Guild pages call it (companion app step 4)
+pub fn watch_share(server: &Server, username: &str, cred: Cred, share: i64) -> Result<u32, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Granted {
+        expires_in: u32,
+    }
+    let mut body = serde_json::json!({ "username": username, "share": share });
+    cred.put(&mut body);
+    let r = agent().post(&format!("{}/api/shares/watch", api_url(server)?)).send_json(body).map_err(|e| match e {
+        ureq::Error::Status(404, r) => match r.into_json::<Failure>().unwrap_or_default().error.as_str() {
+            "NoSuchShare" => explain("NoSuchShare"),
+            _ => "this server has no shares yet".to_string(),
+        },
+        e => failed(e),
+    })?;
+    let g: Granted = r.into_json().map_err(|e| format!("the server's answer was not understood: {e}"))?;
+    Ok(g.expires_in)
 }
 
 /// A DaruGear build as the launcher shows it before sending: the server fetches and maps it itself.

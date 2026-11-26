@@ -104,4 +104,6 @@ shares, friends and guild. Share clip and Rename appear only once the server has
 
 Step 2 is built on the server (aaemu35 08c8c8948, AccountApi.Shares.cs): rename, share and unshare, the feed (community, following, withme, guild, mine, saved), a share with its replies, replies, saves, follows, the watch grant (LG 0x007 to the game server), /api/social (friends and guild by character names, online from the game's character_presence) and guild review with notes and marks. /api/info says shares = true; the replay list carries each recording's name and shares. Visibility is decided from the game database on every request. Next: step 3, the game side of the watch grant.
 
+Step 3 is built (aaemu35, the commit after 08c8c8948): the game server keeps the grant per viewer, the arena's replay player lists it at position 91 and starts it by itself, in a game already open or once a game started afterwards is in the world; the grant lasts 15 minutes and is used once. net.rs has watch_share for step 4's pages; no file is written for the game. Next: step 4, the Shared with me, Saved, Community, Guild and Friends pages.
+
 What the app never shows: invented numbers. A page with nothing yet says so plainly ("No community posts yet").
